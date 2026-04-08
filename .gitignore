@@ -1,0 +1,75 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# =========================
+# OS / Editor
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# =========================
+# Data (DO NOT UPLOAD)
+# =========================
+data/raw/patient_data/
+data/processed/
+data/annotations/
+
+# keep folder structure if needed
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/annotations/.gitkeep
+
+# =========================
+# Models (DO NOT UPLOAD)
+# =========================
+models/classify/*.pth
+models/segmentation/*.pth
+models/archived/
+models/**/checkpoints/
+
+# keep folder structure if needed
+!models/classify/.gitkeep
+!models/segmentation/.gitkeep
+
+# =========================
+# Logs / outputs
+# =========================
+*.log
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.webp
+
+# allow source images in docs if ever needed
+!docs/**/*.png
+!docs/**/*.jpg
+!docs/**/*.jpeg
+
+# =========================
+# Streamlit cache
+# =========================
+.streamlit/
+
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+
+# =========================
+# Misc
+# =========================
+*.tmp
+*.bak
