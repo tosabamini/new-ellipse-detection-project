@@ -1,222 +1,236 @@
 # Ellipse Detection Project (Red Reflex Pipeline)
 
-This project performs **end-to-end red reflex analysis** from patient images:
-
-- Red enhancement (preprocessing)
-- Image quality classification (ML)
-- Segmentation (ML)
-- Ellipse fitting
-- Quantitative evaluation
+End-to-end pipeline for **red reflex analysis** from ophthalmic images.  
+Covers preprocessing, image quality classification, segmentation, and ellipse fitting.
 
 ---
 
-# 📁 Project Structure
+## Project Structure
 
-
+```
 project/
-├─ data/
-│ ├─ raw/ # original patient data
-│ ├─ processed/ # all generated outputs
-│ └─ annotations/ # labeled datasets
+├── data/
+│   ├── raw/
+│   │   └── patient_data/         # original patient images
+│   ├── processed/
+│   │   ├── redenhance/           # RedEnhance outputs (standalone runner)
+│   │   ├── classify_outputs/     # classification inference outputs
+│   │   ├── segmentation_dataset/ # annotated dataset for training
+│   │   ├── segmentation_inference/
+│   │   ├── ellipse_outputs/
+│   │   ├── pipeline_runs/        # end-to-end pipeline outputs (patient data)
+│   │   └── model_eye_runs/       # pipeline outputs (model eye reference data)
+│   ├── annotations/
+│   │   ├── classify/
+│   │   └── segmentation/
+│   └── model_eye/                # model eye reference data (49 refraction folders)
+│       ├── 1000_M_06_00D/        # -6.00 D
+│       ├── 1025_M_05_75D/        # -5.75 D
+│       ├── ...
+│       ├── 1600_Z_00_00D/        # 0.00 D
+│       ├── ...
+│       └── 2200_P_06_00D/        # +6.00 D
 │
-├─ models/
-│ ├─ classify/
-│ └─ segmentation/
+├── models/
+│   ├── classify/
+│   │   └── best_classifier.pth
+│   └── segmentation/
+│       └── best_segmentation_model.pth
 │
-├─ src/
-│ ├─ preprocessing/
-│ ├─ classify/
-│ ├─ segmentation/
-│ ├─ ellipse/
-│ ├─ pipeline/
-│ └─ common/
+├── src/
+│   ├── common/
+│   │   └── paths.py              # all path constants
+│   ├── preprocessing/
+│   │   ├── preprocess_utils.py   # RedEnhance core functions
+│   │   └── redenhance.py         # standalone batch runner
+│   ├── classify/
+│   │   ├── classifier_model.py   # SmallClassifier (CNN)
+│   │   └── infer_classifier.py   # standalone inference runner
+│   ├── segmentation/
+│   │   ├── segmentation_model.py # UNetSmall
+│   │   ├── prepare_segmentation_images.py
+│   │   ├── json_to_mask.py       # Labelme JSON → binary mask
+│   │   ├── train_segmentation.py
+│   │   └── infer_segmentation.py
+│   ├── ellipse/
+│   │   ├── ellipse_utils.py      # ellipse fitting core functions
+│   │   ├── fit_ellipse.py        # standalone ellipse runner
+│   │   └── compare_ellipse_gt_pred.py
+│   ├── pipeline/
+│   │   ├── main.py               # end-to-end pipeline (patient data)
+│   │   └── run_model_eye.py      # RedEnhance + classification (model eye)
+│   └── ui/
+│       └── app.py                # Streamlit UI
 │
-├─ experiments/
-├─ reports/
-└─ README.md
-
+├── experiments/
+├── reports/
+└── requirements.txt
+```
 
 ---
 
-# 🚀 Full Pipeline Overview
+## Patient Data Pipeline
 
+Full pipeline for processing patient images end-to-end.
 
-RAW IMAGE
-↓
-RedEnhance
-↓
-Classifier (good / bad image)
-↓
-Segmentation (mask)
-↓
-Single component extraction
-↓
-Ellipse fitting
-↓
-Quantitative metrics
-
-
----
-
-# 🧪 1. Red Enhancement
-
-Convert raw patient images into enhanced red-reflex images.
-
-## Command
+### 1. Red Enhancement
 
 ```bash
 python -m src.preprocessing.redenhance
-Output
-data/processed/redenhance/<version>/
-├─ <patient_id>/
-│  ├─ roi/
-│  ├─ red/
-│  └─ debug/
-└─ red_enhance_log.csv
+```
 
-🧠 2. Classification (Inference)
+Output: `data/processed/redenhance/<version>/`
 
-Filter usable images using trained classifier.
+### 2. Classification Inference
 
-Command
+```bash
 python -m src.classify.infer_classifier \
   --redenhance_version default \
   --run_name clf_v001_on_default
-Output
-data/processed/classify_outputs/<run_name>/
-├─ positive_for_mask/
-├─ negative/
-├─ all_results/
-└─ predictions.csv
-🧩 3. Segmentation Dataset Preparation
+```
 
-Create dataset for annotation (patient-balanced sampling).
+Output: `data/processed/classify_outputs/<run_name>/`
 
-Command
+### 3. Segmentation Dataset Preparation
+
+```bash
 python -m src.segmentation.prepare_segmentation_images \
   --classify_run_name clf_v001_on_default \
   --dataset_name seg_dataset_v001 \
   --max_train_images 120 \
   --max_val_images 40 \
   --max_test_images 40
-Then annotate using Labelme
-Open folders:
-images/train
-images/val
-images/test
-Label name must be:
-red_reflex
-🧾 4. JSON → Mask Conversion
+```
 
-Convert Labelme annotations into binary masks.
+Then annotate with **Labelme** (label name: `red_reflex`).
 
+### 4. JSON → Mask Conversion
+
+```bash
 python -m src.segmentation.json_to_mask \
   --dataset_name seg_dataset_v001
-🏋️ 5. Train Segmentation Model
+```
+
+### 5. Train Segmentation Model
+
+```bash
 python -m src.segmentation.train_segmentation \
   --dataset_name seg_dataset_v001 \
   --run_name seg_v001_on_seg_dataset_v001 \
-  --batch_size 4 \
-  --epochs 30 \
-  --lr 1e-3
-Outputs
-models/segmentation/
-├─ best_segmentation_model.pth
-├─ <run_name>/
-│  ├─ train_log.csv
-│  ├─ config.json
-│  ├─ val_preds/
-│  └─ test_preds/
-🔍 6. Segmentation Inference
+  --epochs 30 --batch_size 4 --lr 1e-3
+```
 
-Run segmentation on classified images.
+### 6. Segmentation Inference
 
+```bash
 python -m src.segmentation.infer_segmentation \
   --classify_run_name clf_v001_on_default \
   --run_name seginf_v001_on_clf_v001_on_default
-🔵 7. Ellipse Fitting (Prediction Only)
+```
+
+### 7. Ellipse Fitting
+
+```bash
 python -m src.ellipse.fit_ellipse \
   --segmentation_run_name seginf_v001_on_clf_v001_on_default \
   --redenhance_version default \
   --run_name ellipse_v001
-📊 8. Ellipse Evaluation (GT vs Pred)
+```
+
+### 8. GT vs Prediction Evaluation
+
+```bash
 python -m src.ellipse.compare_ellipse_gt_pred \
   --segmentation_train_run_name seg_v001_on_seg_dataset_v001 \
   --redenhance_version default \
   --run_name ellipse_compare_v001
-Outputs
-Area error
-Major/minor axis error
-Angle error
-Visualization overlays
-⚙️ 9. End-to-End Pipeline (Production)
+```
 
-Run everything on new patient data.
+### 9. End-to-End (Production)
 
+```bash
 python -m src.pipeline.main \
   --patient_ids 01 02 \
   --run_name pipeline_run_v001
-Output
-data/processed/pipeline_runs/<run_name>/
-├─ roi/
-├─ red/
-├─ classify_overlay/
-├─ seg_pred/
-├─ ellipse_overlay/
-└─ results.csv
-📌 Key Design Principles
-1. Never overwrite results
+```
 
-Use versioned folders:
+Output: `data/processed/pipeline_runs/<run_name>/<patient_id>/`
 
-red_v001
-clf_v002
-seg_v003
-2. Keep stages independent
-Stage	Input	Output
-RedEnhance	raw	processed
-Classify	red	filtered
-Segmentation	filtered	mask
-Ellipse	mask	geometry
-3. Patient-level split
+---
 
-Avoid data leakage:
+## Model Eye Reference Data Pipeline
 
-train / val / test must be patient-separated
-⚠️ Common Pitfalls
-❌ Model not found
+Pipeline for generating ellipse reference data from a model eye at known refraction powers.  
+Refraction range: **-6.00 D to +6.00 D in 0.25 D steps** (49 folders total).
 
-Check:
+Folder naming convention: `CODE_M/Z/P_DD_DDd`  
+where code = 1600 + refraction × 100, M = minus, Z = zero, P = plus.  
+Example: `1000_M_06_00D` (-6.00 D), `1600_Z_00_00D` (0.00 D), `2200_P_06_00D` (+6.00 D).
 
-models/classify/best_classifier.pth
-models/segmentation/best_segmentation_model.pth
-❌ Empty segmentation output
-classifier threshold too strict
-preprocessing mismatch
-❌ Ellipse fails
-multiple mask regions
-insufficient contour points (<5)
-🔧 Future Improvements
-Improve RedEnhance (lighting normalization)
-Retrain classifier with more data
-Increase segmentation dataset size
-Add temporal consistency (video)
-Improve ellipse robustness
-👤 Author Notes
+### STEP 1 — RedEnhance + Image Quality Classification
 
-This pipeline is designed for:
+```bash
+python -m src.pipeline.run_model_eye --run_name model_eye_v001
+```
 
-ophthalmic imaging
-red reflex analysis
-low-cost smartphone-based diagnostics
-🏁 Summary
+Options:
+- `--run_name`  : output folder name (auto-generated from timestamp if omitted)
+- `--folders`   : process specific refraction folders only
 
-This project provides a full pipeline:
+Output: `data/processed/model_eye_runs/<run_name>/<refraction_folder>/`
 
-Patient Image → ML → Geometry → Quantitative Analysis
+```
+<refraction_folder>/
+├── roi/              # center-cropped original
+├── red/              # RedEnhance output (annotate these in Labelme)
+├── classify_overlay/ # classification result visualization
+└── results.csv
+```
 
-and is structured for:
+### STEP 2 — Manual Segmentation (Labelme)
 
-reproducibility
-modular experimentation
-scalable improvement
+Open images in `red/` with Labelme and draw polygons around the red reflex region.
+
+- Label name: **`red_reflex`**
+- Labelme saves JSON alongside each image automatically
+
+### STEP 3-4 — JSON → Mask + Ellipse Fitting (planned)
+
+Script `src/pipeline/run_model_eye_ellipse.py` (to be implemented):
+- Converts Labelme JSONs to binary masks (same logic as `json_to_mask.py`)
+- Runs ellipse fitting (same logic as `ellipse_utils.py`)
+- Outputs per-refraction summary CSV
+
+```
+model_eye_runs/<run_name>/ellipse_results/
+├── 1600_Z_00_00D/
+│   ├── masks/
+│   └── overlay/
+├── ...
+└── ellipse_summary.csv
+```
+
+---
+
+## Key Design Principles
+
+1. **Versioned outputs** — never overwrite results; use named run folders
+2. **Modular stages** — each stage reads from and writes to named directories
+3. **Shared processing logic** — `run_model_eye.py` imports directly from `main.py` so any changes to core functions propagate automatically
+4. **Patient-level data split** — train/val/test must be patient-separated to avoid leakage
+
+---
+
+## Common Issues
+
+| Symptom | Check |
+|---|---|
+| Model not found | `models/classify/best_classifier.pth` and `models/segmentation/best_segmentation_model.pth` |
+| Empty segmentation | Classifier threshold too strict, or preprocessing mismatch |
+| Ellipse fitting fails | Multiple disconnected mask regions, or fewer than 5 contour points |
+
+---
+
+## Notes
+
+Designed for ophthalmic imaging / red reflex analysis in low-cost smartphone-based diagnostics.
