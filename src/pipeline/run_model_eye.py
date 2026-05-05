@@ -47,6 +47,12 @@ def parse_args():
         help="出力フォルダ名（省略時は実行日時から自動生成）",
     )
     parser.add_argument(
+        "--pupil_mm",
+        type=str,
+        default="7.0mm",
+        help="瞳孔径フォルダ名（例: 7.0mm, 5.0mm, 3.0mm）",
+    )
+    parser.add_argument(
         "--folders",
         nargs="*",
         default=None,
@@ -62,8 +68,8 @@ def find_images(folder: Path) -> list[Path]:
     return sorted(Path(p) for p in paths)
 
 
-def process_folder(folder: Path, run_root: Path, classifier_model) -> list[dict]:
-    images = find_images(folder)
+def process_folder(folder: Path, run_root: Path, classifier_model, pupil_mm: str) -> list[dict]:
+    images = find_images(folder / pupil_mm)
     folder_name = folder.name
     print(f"[{folder_name}] 画像数: {len(images)}")
 
@@ -162,6 +168,7 @@ def main():
 
     print("========== MODEL EYE BATCH ==========")
     print(f"MODEL_EYE_DIR : {MODEL_EYE_DIR}")
+    print(f"PUPIL         : {args.pupil_mm}")
     print(f"RUN_ROOT      : {run_root}")
     print(f"DEVICE        : {DEVICE}")
     print(f"THRESHOLD     : {CLASSIFIER_THRESHOLD}")
@@ -190,7 +197,7 @@ def main():
 
     all_rows = []
     for folder in target_folders:
-        rows = process_folder(folder, run_root, classifier_model)
+        rows = process_folder(folder, run_root, classifier_model, args.pupil_mm)
         all_rows.extend(rows)
 
     # 全体集計 CSV

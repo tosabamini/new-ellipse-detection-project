@@ -380,6 +380,34 @@ def process_patient(patient_id, run_root, classifier_model, segmentation_model):
 
     print(f"[{patient_id}] done -> {csv_path}")
 
+    # -------------------------------------------------
+    # 5. refraction estimation (S, C, A)
+    # -------------------------------------------------
+    from src.analysis.refraction_estimator import (
+        run_refraction_analysis,
+        write_per_image_csv,
+        write_sca_csv,
+    )
+    refraction_result = run_refraction_analysis(csv_path, patient_id)
+    write_per_image_csv(
+        refraction_result["per_image"],
+        patient_root / "refraction_per_image.csv",
+    )
+    write_sca_csv(patient_id, refraction_result, patient_root / "refraction_sca.csv")
+
+    sca = refraction_result["sca"]
+    if sca:
+        print(
+            f"[{patient_id}] SCA: S={sca['S']:+.2f}D  C={sca['C']:+.2f}D  "
+            f"A={sca['A']:.1f}deg  SE={sca['SE']:+.2f}D  "
+            f"R2={sca['R2']:.3f}  n={sca['n']}/{refraction_result['n_total']}"
+        )
+    else:
+        print(
+            f"[{patient_id}] SCA: insufficient valid images "
+            f"(n_valid={refraction_result['n_valid']}/{refraction_result['n_total']})"
+        )
+
 
 def main():
     args = parse_args()
