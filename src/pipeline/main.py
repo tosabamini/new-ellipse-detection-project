@@ -63,7 +63,12 @@ def ensure_dir(path: Path):
 
 
 def find_patient_image_paths(patient_id: str):
-    patient_dir = PATIENT_DATA_DIR / patient_id
+    # "101_LEFT" → PATIENT_DATA_DIR/101/LEFT, "101" → PATIENT_DATA_DIR/101
+    parts = patient_id.rsplit("_", 1)
+    if len(parts) == 2 and parts[1] in ("LEFT", "RIGHT"):
+        patient_dir = PATIENT_DATA_DIR / parts[0] / parts[1]
+    else:
+        patient_dir = PATIENT_DATA_DIR / patient_id
     if not patient_dir.exists():
         raise RuntimeError(f"patient folder not found: {patient_dir}")
 

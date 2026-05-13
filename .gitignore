@@ -73,3 +73,5 @@ models/**/checkpoints/
 # =========================
 *.tmp
 *.bak
+# Claude Code internal files
+.claude/

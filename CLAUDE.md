@@ -17,10 +17,13 @@ Key modules:
 - `src/classify/classifier_model.py` — SmallClassifier (1-ch CNN, input 160×72, threshold 0.9)
 - `src/segmentation/segmentation_model.py` — UNetSmall (1-ch input/output, threshold 0.5)
 - `src/ellipse/ellipse_utils.py` — `fit_ellipse_from_mask`, `make_pred_overlay`, `add_text_block`
-- `src/pipeline/main.py` — end-to-end runner for patient data; also exports reusable functions
+- `src/ellipse/ellipse_otsu_tester.py` — classical (DoG+Otsu) ellipse CLI tester; methods: auto/otsu/percentile/center_hull/sweep/top10_hull/thin_hull; imports from `src.*`
+- `src/pipeline/main.py` — end-to-end runner for patient data; also exports reusable functions; supports `101_LEFT`/`101_RIGHT` patient ID format (→ `data/101/LEFT/`)
 - `src/pipeline/run_model_eye.py` — model eye batch runner; imports directly from `main.py`
+- `src/pipeline/make_report.py` — report image generator: cos-curve, ellipse grid, classify grid per patient; angle-bin summary CSV
 - `src/analysis/build_patient_model.py` — model eye reference calibration; `estimate_D(major, ratio)` → (p_est, D1, D2)
 - `src/analysis/refraction_estimator.py` — refraction pipeline module; per-image D estimation + SCA trigonometric fit
+- `experiments/otsu_ellipse_single.py` — **standalone** single-image classical ellipse tester; no `src.*` imports; edit `INPUT_IMAGE` at the top and run directly
 
 ---
 
@@ -80,6 +83,23 @@ STEP 3 script (`src/pipeline/run_model_eye_ellipse.py`) will:
 
 ---
 
+## Classical ellipse pipeline (experiments/otsu_ellipse_single.py)
+
+Used when ML segmentation produces distorted results.
+
+```
+red_enhance (R−0.5G−0.5B) → stretch_to_255 → DoG(σ=1.5, σ=15)
+    → Otsu → pick_central_blob → dilate_along_major(7×25) → cv2.fitEllipse
+```
+
+- **DoG**: removes diffuse background halo (low-freq), keeps sharp bright core (high-freq).  
+  Without DoG, Otsu includes the halo → minor axis ~28 px instead of ~21 px.
+- **dilate_along_major(7×25)**: rect kernel, taller than wide. Recovers dim tips that  
+  Otsu cuts off after DoG. Assumes major axis is nearly vertical (~88–90°).
+- Kernel size (7×25) was tuned on `102_LEFT`; may need adjustment for other image sets.
+
+---
+
 ## Key constants
 
 | Constant | Value | Location |
@@ -90,6 +110,9 @@ STEP 3 script (`src/pipeline/run_model_eye_ellipse.py`) will:
 | Brightness VERY_DARK | < 7 | `preprocess_utils.py` |
 | Brightness DARK | < 30 | `preprocess_utils.py` |
 | CLAHE grid | 8 × 8 | `preprocess_utils.py` |
+| DoG sigma_small | 1.5 | `otsu_ellipse_single.py` / `ellipse_otsu_tester.py` |
+| DoG sigma_large | 15.0 | `otsu_ellipse_single.py` / `ellipse_otsu_tester.py` |
+| Dilation kernel (classical) | 7 × 25 px | `otsu_ellipse_single.py` |
 | SCALE_FACTOR (patient px correction) | 1.3 (暫定) | `refraction_estimator.py` |
 | P_EST_MAX (noise filter) | 10.0 mm | `refraction_estimator.py` |
 | MIN_VALID (SCA fit minimum) | 3 images | `refraction_estimator.py` |
@@ -99,8 +122,8 @@ STEP 3 script (`src/pipeline/run_model_eye_ellipse.py`) will:
 ## Run commands
 
 ```bash
-# Patient data end-to-end
-python -m src.pipeline.main --patient_ids 01 02 --run_name pipeline_run_v001
+# Patient data end-to-end (supports 101_LEFT / 101_RIGHT style IDs)
+python -m src.pipeline.main --patient_ids 101_LEFT 101_RIGHT --run_name pipeline_run_v001
 
 # Model eye: RedEnhance + classification (pupil_mm defaults to 7.0mm)
 python -m src.pipeline.run_model_eye --run_name model_eye_7mm_v001 --pupil_mm 7.0mm
@@ -114,6 +137,15 @@ python -m src.preprocessing.redenhance
 # Segmentation training
 python -m src.segmentation.train_segmentation \
   --dataset_name seg_dataset_v001 --run_name seg_v001 --epochs 30
+
+# Report generation
+python -m src.pipeline.make_report --run_name pipeline_run_v001 --patient_ids 101_LEFT 101_RIGHT
+
+# Classical ellipse tester (CLI, multiple methods)
+python -m src.ellipse.ellipse_otsu_tester --input path/to/roi.png --method sweep
+
+# Classical ellipse tester (standalone, no src.* imports — edit INPUT_IMAGE inside the file)
+python experiments/otsu_ellipse_single.py
 
 # Streamlit UI
 streamlit run src/ui/app.py

@@ -53,19 +53,23 @@ project/
 │   │   ├── train_segmentation.py
 │   │   └── infer_segmentation.py
 │   ├── ellipse/
-│   │   ├── ellipse_utils.py      # ellipse fitting core functions
-│   │   ├── fit_ellipse.py        # standalone ellipse runner
+│   │   ├── ellipse_utils.py          # ellipse fitting core functions
+│   │   ├── fit_ellipse.py            # standalone ellipse runner
+│   │   ├── ellipse_otsu_tester.py    # classical (DoG+Otsu) CLI tester — multi-method
 │   │   └── compare_ellipse_gt_pred.py
 │   ├── analysis/
 │   │   ├── build_patient_model.py   # model eye calibration → estimate_D(major, ratio)
 │   │   └── refraction_estimator.py  # per-image D + SCA trigonometric fit
 │   ├── pipeline/
 │   │   ├── main.py               # end-to-end pipeline (patient data) + SCA output
-│   │   └── run_model_eye.py      # RedEnhance + classification (model eye)
+│   │   ├── run_model_eye.py      # RedEnhance + classification (model eye)
+│   │   └── make_report.py        # generate report images (cos-curve, ellipse grid, classify grid)
 │   └── ui/
 │       └── app.py                # Streamlit UI
 │
 ├── experiments/
+│   ├── otsu_ellipse_single.py  # standalone single-image ellipse tester (no src.* imports)
+│   └── classical_seg_trial.py  # earlier classical segmentation experiments
 ├── reports/
 └── requirements.txt
 ```
@@ -269,6 +273,87 @@ model_eye_runs/<run_name>/ellipse_results/
 ├── ...
 └── ellipse_summary.csv
 ```
+
+---
+
+## Classical (Image-Processing) Ellipse Extraction
+
+When the ML segmentation model produces poor masks (e.g., distorted or multi-blob results),
+a classical image-processing pipeline can recover accurate ellipses without retraining.
+
+### Pipeline
+
+```
+ROI image
+    ↓  red_enhance        R − 0.5G − 0.5B  (suppresses blue/green artefacts)
+    ↓  stretch_to_255     linear remap: darkest→0, brightest→255
+    ↓  dog_sharpen        Difference of Gaussians (σ=1.5, σ=15)
+                          subtracts diffuse background glow, keeps sharp bright core
+    ↓  otsu_mask          Otsu threshold on the DoG image
+    ↓  pick_central_blob  keep the connected component closest to image centre
+    ↓  dilate_along_major rect dilation (7 wide × 25 tall)
+                          recovers dim tips that Otsu cuts off
+    ↓  cv2.fitEllipse     final ellipse parameters
+```
+
+**Why DoG?** A plain Otsu on the red-enhanced image includes the wide diffuse halo
+around the reflex, inflating the minor axis (~28 px vs. true ~21 px). The DoG filter
+suppresses slow-varying background while preserving the thin bright stripe.
+
+**Why dilation?** After DoG + Otsu the dim tips of the ellipse are cut off (major
+underestimated by ~20%). A fixed 7×25 rectangular dilation recovers them. The kernel
+is taller than wide because the major axis of a red reflex is nearly vertical (~88–90°).
+
+### Standalone tester (no `src.*` imports required)
+
+```bash
+python experiments/otsu_ellipse_single.py
+```
+
+Edit `INPUT_IMAGE` and `OUTPUT_DIR` at the top of the file.  
+Outputs saved to `experiments/otsu_output/`: diagnostic grid, ellipse overlay, mask, DoG image.
+
+### CLI tester (full-featured, requires project root in `PYTHONPATH`)
+
+```bash
+# auto mode (picks best of otsu / percentile / center_hull)
+python -m src.ellipse.ellipse_otsu_tester --input path/to/roi.png --method auto
+
+# sweep foreground ratios and detect elbow point
+python -m src.ellipse.ellipse_otsu_tester --input path/to/roi.png --method sweep
+
+# top-10% hull
+python -m src.ellipse.ellipse_otsu_tester --input path/to/roi.png --method top10_hull
+```
+
+### Performance on reference image (`102_LEFT`)
+
+| | Classical pipeline | ML segmentation |
+|---|---|---|
+| center | (377.7, 290.0) | (378.3, 289.7) |
+| major | 148.0 px | 140.7 px |
+| minor | 21.5 px | 21.2 px |
+| ratio | 0.145 | 0.151 |
+| angle | 88.4° | 88.2° |
+
+---
+
+## Report Generation
+
+Generate visualization reports from a completed pipeline run.
+
+```bash
+python -m src.pipeline.make_report \
+    --run_name pipeline_run_v001 \
+    --patient_ids 101_LEFT 101_RIGHT
+```
+
+Outputs per patient under `<run_root>/<patient_id>/report/`:
+- `cos_curve.png` — D vs angle trigonometric fit curve (colour-coded by angle bin)
+- `ellipse_grid.png` — all ellipse overlays in a grid
+- `classify_grid.png` — all classification overlay images
+
+Also outputs `<run_root>/angle_bin_summary.csv` — image count per angle bin across all patients.
 
 ---
 
