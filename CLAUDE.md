@@ -3,8 +3,11 @@
 ## What this project is
 
 End-to-end red reflex analysis pipeline for ophthalmic images.  
-Processes patient images through: RedEnhance → Classification → Segmentation → Ellipse fitting → Refraction estimation (S, C, A).  
-A secondary workflow generates reference ellipse data from a model eye at known refraction powers, which is used as calibration data for refraction estimation.
+Two parallel pipelines:
+- **ML-based** (legacy): RedEnhance → Classification → Segmentation → Ellipse fitting → Refraction estimation (S, C, A).
+- **Geometry-only v150526** (current): RedEnhance → AdaptDoG → IQR filter → Pupil estimation → D estimation → D-IQR → SCA fit. No neural networks; suitable for Android/iOS deployment.
+
+A secondary workflow generates reference ellipse data from a model eye at known refraction powers, used as calibration data for refraction estimation.
 
 ---
 
@@ -18,11 +21,14 @@ Key modules:
 - `src/segmentation/segmentation_model.py` — UNetSmall (1-ch input/output, threshold 0.5)
 - `src/ellipse/ellipse_utils.py` — `fit_ellipse_from_mask`, `make_pred_overlay`, `add_text_block`
 - `src/ellipse/ellipse_otsu_tester.py` — classical (DoG+Otsu) ellipse CLI tester; methods: auto/otsu/percentile/center_hull/sweep/top10_hull/thin_hull; imports from `src.*`
-- `src/pipeline/main.py` — end-to-end runner for patient data; also exports reusable functions; supports `101_LEFT`/`101_RIGHT` patient ID format (→ `data/101/LEFT/`)
+- `src/ellipse/adaptdog.py` — **[v150526]** AdaptDoG ellipse fitting (adaptive sigma, angle-aware dilation) + `iqr_filter` + `d_iqr_filter`
+- `src/pipeline/main.py` — end-to-end runner for patient data (ML-based); also exports reusable functions; supports `101_LEFT`/`101_RIGHT` patient ID format (→ `data/101/LEFT/`)
 - `src/pipeline/run_model_eye.py` — model eye batch runner; imports directly from `main.py`
 - `src/pipeline/make_report.py` — report image generator: cos-curve, ellipse grid, classify grid per patient; angle-bin summary CSV
-- `src/analysis/build_patient_model.py` — model eye reference calibration; `estimate_D(major, ratio)` → (p_est, D1, D2)
+- `src/pipeline/pipeline_v150526.py` — **[v150526]** geometry-only end-to-end pipeline (Raw → SCA, no ML); CLI: `--patient_ids`, `--run_name`, `--exclude_prefixes`
+- `src/analysis/build_patient_model.py` — model eye reference calibration; `estimate_D_from_ratio_and_p(ratio, p)` → (D1, D2)
 - `src/analysis/refraction_estimator.py` — refraction pipeline module; per-image D estimation + SCA trigonometric fit
+- `src/analysis/pupil_estimator.py` — **[v150526]** pupil diameter estimation from (ratio, area_scaled) via quadratic formula; `SCALE_FACTOR=1.3` (暫定)
 - `experiments/otsu_ellipse_single.py` — **standalone** single-image classical ellipse tester; no `src.*` imports; edit `INPUT_IMAGE` at the top and run directly
 
 ---
@@ -113,16 +119,31 @@ red_enhance (R−0.5G−0.5B) → stretch_to_255 → DoG(σ=1.5, σ=15)
 | DoG sigma_small | 1.5 | `otsu_ellipse_single.py` / `ellipse_otsu_tester.py` |
 | DoG sigma_large | 15.0 | `otsu_ellipse_single.py` / `ellipse_otsu_tester.py` |
 | Dilation kernel (classical) | 7 × 25 px | `otsu_ellipse_single.py` |
-| SCALE_FACTOR (patient px correction) | 1.3 (暫定) | `refraction_estimator.py` |
-| P_EST_MAX (noise filter) | 10.0 mm | `refraction_estimator.py` |
-| MIN_VALID (SCA fit minimum) | 3 images | `refraction_estimator.py` |
+| SCALE_FACTOR (patient px correction) | 1.3 (暫定) | `pupil_estimator.py` |
+| P_MIN / P_MAX (pupil range) | 2.0 / 9.0 mm | `pupil_estimator.py` |
+| IQR_K (major axis IQR filter) | 0.5 | `adaptdog.py` / `pipeline_v150526.py` |
+| D_IQR_K (D outlier filter per bin) | 1.5 | `adaptdog.py` / `pipeline_v150526.py` |
+| MIN_VALID (SCA fit minimum) | 3 images | `pipeline_v150526.py` |
+| Pupil slope coefficients | S2=928.28, S1=1780.95, S0=−872.10 | `pupil_estimator.py` |
+| Pupil intercept coefficients | I2=−462.23, I1=3344.24, I0=−4477.24 | `pupil_estimator.py` |
 
 ---
 
 ## Run commands
 
 ```bash
-# Patient data end-to-end (supports 101_LEFT / 101_RIGHT style IDs)
+# [v150526] Geometry-only pipeline: Raw → SCA (no ML)
+python -m src.pipeline.pipeline_v150526 \
+  --patient_ids 101_LEFT 101_RIGHT \
+  --run_name pipeline_v150526_run01
+
+# [v150526] With image exclusion (e.g. 104_RIGHT has 3D rig images)
+python -m src.pipeline.pipeline_v150526 \
+  --patient_ids 104_LEFT 104_RIGHT \
+  --run_name pipeline_v150526_run01 \
+  --exclude_prefixes r_3D_ samarth_3D_
+
+# Patient data end-to-end ML pipeline (supports 101_LEFT / 101_RIGHT style IDs)
 python -m src.pipeline.main --patient_ids 101_LEFT 101_RIGHT --run_name pipeline_run_v001
 
 # Model eye: RedEnhance + classification (pupil_mm defaults to 7.0mm)
@@ -153,18 +174,22 @@ streamlit run src/ui/app.py
 
 ---
 
-## Refraction estimation model (src/analysis/)
+## Refraction estimation model (src/analysis/) — v150526
 
 ### Physical model
 
 ```
 Ellipse (major_px, minor_px, angle_deg)
     ↓
-ratio = minor / major
-major_scaled = major_px × SCALE_FACTOR          [px scale correction]
-p_est = major_to_pupil(major_scaled)            [major → pupil diameter (mm)]
-D1, D2 = estimate_D_from_ratio_and_p(ratio, p_est)  [ratio → refraction (D), 2 solutions]
-adopted_D = D2                                  [myopic side adopted]
+ratio      = minor / major                    [scale-invariant]
+area_scaled = major × minor × SCALE_FACTOR²  [SCALE_FACTOR=1.3, 暫定]
+p_est = solve quadratic in p:
+    [S2·ratio + I2]·p² + [S1·ratio + I1]·p + [S0·ratio + I0 - area_scaled] = 0
+    S2=928.28, S1=1780.95, S0=-872.10
+    I2=-462.23, I1=3344.24, I0=-4477.24
+    → keep root in [P_MIN=2, P_MAX=9] mm
+D1, D2 = estimate_D_from_ratio_and_p(ratio, p_est)  [2 refraction solutions]
+adopted_D = D2                                        [myopic side adopted]
     ↓  (per patient, across all images with angle α)
 D = P0 + P1·cos(2α) + P2·sin(2α)              [trigonometric fit]
     ↓
@@ -176,20 +201,21 @@ A  = 0.5·atan2(-P2, -P1) % 180  (cylinder axis, deg)
 
 ### Calibration data (build_patient_model.py)
 
-Model eye reference: 3 pupil sizes × multiple refraction powers.  
-Reference major axis values: 3 mm → 130 px, 5 mm → 180 px, 7 mm → 200 px (model eye scale).
+Model eye reference: 3 pupil sizes × multiple refraction powers.
 
-Fitted relationships (all quadratic):
-- `p = 0.000857·M^2 − 0.22571·M + 17.857` (major → pupil mm)
+Fitted relationships (all quadratic in p):
 - `ratio = a(p)·D^2 + b(p)·D + c(p)` with a, b, c interpolated as quadratics in p
+- Pupil model: `area = slope(p)·ratio + intercept(p)`, inverted as quadratic in p (see `pupil_estimator.py`)
 
-### Pipeline output files (per patient)
+### Pipeline output files (per patient, v150526)
 
 | File | Contents |
 |---|---|
-| `results.csv` | ellipse parameters per image |
-| `refraction_per_image.csv` | D1, D2, adopted_D, p_est per image |
-| `refraction_sca.csv` | S, C, A, SE, R2, n for the patient |
+| `per_image.csv` | ratio, area_scaled, p_est, adopted_D, angle_bin per image |
+| `sca.csv` | S, C, A, SE, R2, n for the patient |
+| `cos_curve.png` | D vs angle cosine fit |
+| `angle_dist.png` | angle distribution histogram |
+| `ellipse_grid.png` | representative ellipse overlay grid |
 
 ---
 
@@ -206,6 +232,33 @@ is understood.
 Inverting the quadratic ratio formula yields two refraction solutions. Currently D2 (myopic
 side) is adopted unconditionally. The user is working on a separate resolution strategy —
 do not propose solutions.
+
+### AdaptDoG thresholding variants (deferred — current variant adopted)
+Investigated 3 alternative thresholding strategies for AdaptDoG on 104_LEFT (38 images):
+- **A**: post-Otsu erode (`kernel = minor_est * 0.12`) to remove gradient shoulders
+- **B**: raise threshold to Otsu + 30% of remaining headroom
+- **C**: CLAHE (clipLimit=2.0, tileGridSize=8×8) on DoG before Otsu
+
+Results (see `experiments/method_compare_output/104_LEFT_variants/`):
+- A gave consistently tighter masks (ratio ~0.03–0.05 lower, major ~2–6 px smaller) with
+  one edge case (`134221_891`) where erode fragmented the core and pick_central_blob picked
+  the wrong piece — a rare but real failure mode.
+- B and C did not show clear improvement over current.
+- **Decision: keep "current" (plain Otsu).** A is not bad but the fragmentation risk
+  outweighs the marginal tightening benefit at this stage. Revisit if ratio accuracy
+  becomes a bottleneck.
+
+---
+
+## Next session roadmap (as of 2026-05-15)
+
+1. **Android integration** — port `pipeline_v150526` logic to Android (OpenCV for Android / JNI or Python-on-device via Chaquopy).  
+   Externalize all calibration constants (SCALE_FACTOR, pupil model coefficients, SCA fit parameters) to a config file or constants class so they can be updated without rebuilding the app.
+
+2. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
+   Known issues: axis error (~40° offset for 104_LEFT) and C overestimation (~2×) may be partially explained by stale reference data.
+
+3. **More patient data** — run `pipeline_v150526` on additional patients; compare S/C/A outputs against ground-truth refraction records.
 
 ---
 

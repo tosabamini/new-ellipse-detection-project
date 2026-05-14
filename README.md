@@ -56,20 +56,26 @@ project/
 │   │   ├── ellipse_utils.py          # ellipse fitting core functions
 │   │   ├── fit_ellipse.py            # standalone ellipse runner
 │   │   ├── ellipse_otsu_tester.py    # classical (DoG+Otsu) CLI tester — multi-method
-│   │   └── compare_ellipse_gt_pred.py
+│   │   ├── compare_ellipse_gt_pred.py
+│   │   └── adaptdog.py               # AdaptDoG ellipse fitting + IQR/D-IQR filters [v150526]
 │   ├── analysis/
-│   │   ├── build_patient_model.py   # model eye calibration → estimate_D(major, ratio)
-│   │   └── refraction_estimator.py  # per-image D + SCA trigonometric fit
+│   │   ├── build_patient_model.py   # model eye calibration → estimate_D(ratio, p)
+│   │   ├── refraction_estimator.py  # per-image D + SCA trigonometric fit
+│   │   └── pupil_estimator.py       # pupil diameter from (ratio, area_scaled) [v150526]
 │   ├── pipeline/
-│   │   ├── main.py               # end-to-end pipeline (patient data) + SCA output
-│   │   ├── run_model_eye.py      # RedEnhance + classification (model eye)
-│   │   └── make_report.py        # generate report images (cos-curve, ellipse grid, classify grid)
+│   │   ├── main.py                  # end-to-end pipeline (patient data, ML-based)
+│   │   ├── run_model_eye.py         # RedEnhance + classification (model eye)
+│   │   ├── make_report.py           # report images (cos-curve, ellipse grid, classify grid)
+│   │   └── pipeline_v150526.py      # geometry-only pipeline Raw→SCA (no ML) [v150526]
 │   └── ui/
 │       └── app.py                # Streamlit UI
 │
 ├── experiments/
-│   ├── otsu_ellipse_single.py  # standalone single-image ellipse tester (no src.* imports)
-│   └── classical_seg_trial.py  # earlier classical segmentation experiments
+│   ├── otsu_ellipse_single.py      # standalone single-image ellipse tester (no src.* imports)
+│   ├── classical_seg_trial.py      # earlier classical segmentation experiments
+│   ├── sca_batch_all.py            # batch SCA estimation for all patients (101-106 excl. 103)
+│   ├── sf_sweep_104_RIGHT.py       # Scale Factor sensitivity sweep
+│   └── sca_104_LEFT_newpupil.py    # new pupil estimation method validation
 ├── reports/
 └── requirements.txt
 ```
@@ -186,39 +192,59 @@ Each patient folder contains:
 
 The pipeline automatically estimates **Sphere, Cylinder, and Axis** for each patient using model eye reference data as calibration.
 
-### Physical model
+### Physical model (v150526)
 
 ```
-Ellipse (major_px, minor_px, angle_deg)  — per image
+Raw image
+    ↓  RedEnhance  :  R − 0.5G − 0.5B
+    ↓  center_crop :  ROI
+    ↓  AdaptDoG    :  adaptive DoG → Otsu → blob → ellipse (cx, cy, major, minor, angle)
+    ↓  IQR filter  :  exclude images with no/weak red reflex (fence = Q1 − 0.5·IQR on major)
     ↓
-ratio = minor / major
-major_scaled = major_px × SCALE_FACTOR      (px scale correction,暫定 1.3)
-p_est  = major_to_pupil(major_scaled)       (major → pupil diameter in mm)
-D1, D2 = solve quadratic in ratio           (2 refraction solutions)
-adopted_D = D2                              (myopic side adopted)
+ratio = minor / major                        (scale-invariant)
+area_scaled = major × minor × SCALE_FACTOR²  (暫定 SF=1.3)
+p_est = solve quadratic in p:
+    [S2·ratio + I2]·p² + [S1·ratio + I1]·p + [S0·ratio + I0 − area_scaled] = 0
+    → keep root in [2, 9] mm
+D1, D2 = estimate_D_from_ratio_and_p(ratio, p_est)
+adopted_D = D2                               (myopic side adopted)
+    ↓  D-IQR filter per angle bin (k=1.5)
     ↓  across all valid images for one patient
-D(α) = P0 + P1·cos(2α) + P2·sin(2α)       (trigonometric fit, α = major axis angle)
+D(α) = P0 + P1·cos(2α) + P2·sin(2α)        (trigonometric fit, α = major axis angle)
     ↓
 SE = P0
-C  = −2·√(P1² + P2²)    (cylinder, minus notation)
+C  = −2·√(P1² + P2²)     (cylinder, minus notation)
 S  = SE − C/2
-A  = ½·atan2(−P2, −P1) mod 180°            (cylinder axis)
+A  = ½·atan2(−P2, −P1) mod 180°             (cylinder axis)
 ```
+
+### Pupil estimation calibration (src/analysis/pupil_estimator.py)
+
+Model:  `area = slope(p) · ratio + intercept(p)`,  inverted as a quadratic in p.
+
+```
+slope(p)     =  928.28·p² + 1780.95·p −  872.10
+intercept(p) = −462.23·p² + 3344.24·p − 4477.24
+```
+
+Derived from hand-labeled model eye data at p = 3, 5, 7 mm; area = major × minor × SF².  
+(R² > 0.95 for all three pupil sizes.)
 
 ### Calibration (src/analysis/build_patient_model.py)
 
 Fitted from model eye measurements at 3 pupil sizes (3, 5, 7 mm) × multiple refraction powers:
 
-- **Major → pupil**: `p = 0.000857·M² − 0.22571·M + 17.857`  
-  Reference points: 3 mm → 130 px, 5 mm → 180 px, 7 mm → 200 px (model eye scale)
 - **Ratio model**: `ratio = a(p)·D² + b(p)·D + c(p)` with a, b, c quadratic in p
 
-### Output files
+### Output files (per patient, pipeline_v150526)
 
 | File | Contents |
 |---|---|
-| `refraction_per_image.csv` | ratio, p_est, D1, D2, adopted_D per image |
-| `refraction_sca.csv` | S, C, A, SE, R², n\_valid, n\_total per patient |
+| `per_image.csv` | ratio, p_est, adopted_D, angle_bin per image |
+| `sca.csv` | S, C, A, SE, R², n per patient |
+| `cos_curve.png` | D vs angle trigonometric fit |
+| `angle_dist.png` | angle distribution histogram |
+| `ellipse_grid.png` | grid of ellipse overlays |
 
 ---
 
@@ -273,6 +299,60 @@ model_eye_runs/<run_name>/ellipse_results/
 ├── ...
 └── ellipse_summary.csv
 ```
+
+---
+
+## Pipeline v150526 — Geometry-Only (No ML)
+
+End-to-end pipeline from raw images to S/C/A.  
+**No neural networks** — all steps are classical image processing (OpenCV only).  
+Suitable for on-device deployment on Android/iOS.
+
+### Run
+
+```bash
+# Single or multiple patients
+python -m src.pipeline.pipeline_v150526 \
+    --patient_ids 101_LEFT 101_RIGHT \
+    --run_name pipeline_v150526_run01
+
+# With image exclusion (e.g. 104_RIGHT has 3D rig images)
+python -m src.pipeline.pipeline_v150526 \
+    --patient_ids 104_LEFT 104_RIGHT \
+    --run_name pipeline_v150526_run01 \
+    --exclude_prefixes r_3D_ samarth_3D_
+```
+
+Input: `data/raw/patient_data/<N>/<SIDE>/` (JPEG/PNG images)  
+Output: `data/processed/pipeline_runs/<run_name>/<patient_id>/`
+
+```
+<patient_id>/
+├── red/              # RedEnhance output (R−0.5G−0.5B)
+├── roi/              # Center-cropped ROI images
+├── ellipse/          # Ellipse overlay visualizations
+├── per_image.csv     # Per-image: ratio, area, p_est, D, angle_bin
+├── sca.csv           # Patient-level: S, C, A, SE, R², n
+├── cos_curve.png     # D vs angle cosine fit plot
+├── angle_dist.png    # Angle distribution histogram
+└── ellipse_grid.png  # Grid of representative ellipse overlays
+```
+
+### Batch results (patients 101–106, excl. 103, 2026-05-15)
+
+| Patient | S | C | A | R² | p_med |
+|---|---|---|---|---|---|
+| 101_LEFT | — | — | — | — | — |
+| 101_RIGHT | — | — | — | 0.866 | — |
+| 102_LEFT | * | * | * | * | * |
+| 104_LEFT | −1.24 | −2.26 | 111° | 0.645 | 2.8mm |
+| 104_RIGHT | −2.27 | −1.82 | 106° | 0.167 | — |
+| 105_LEFT | — | — | — | 0.039 | — |
+| 105_RIGHT | — | — | — | 0.898 | — |
+| 106_LEFT | — | — | — | — | — |
+| 106_RIGHT | — | — | — | — | — |
+
+\* 102_LEFT: very narrow angle distribution → unreliable C estimate (artifact).
 
 ---
 
@@ -392,6 +472,18 @@ be unreliable near emmetropia.
 
 **Status:** Deferred. The ratio-based refraction formula and the major-axis-to-pupil-diameter
 mapping are intentional approximations until the root cause is understood.
+
+---
+
+## Next Session Roadmap (as of 2026-05-15)
+
+1. **Android integration** — port pipeline_v150526 to Android (OpenCV for Android / JNI).  
+   SCALE_FACTOR and reference calibration coefficients must be externalized (config file or constants class) so they can be updated without rebuilding.
+
+2. **Reference data retake** — recollect model eye images to recalibrate SCALE_FACTOR and the (ratio, area) → pupil model.  
+   Current SF = 1.3 is provisional; axis error (~40° off) and C overestimation (~2×) may be partly explained by stale reference data.
+
+3. **More patient data** — run pipeline_v150526 on additional patients and compare estimated S/C/A to ground-truth refraction records.
 
 ---
 
