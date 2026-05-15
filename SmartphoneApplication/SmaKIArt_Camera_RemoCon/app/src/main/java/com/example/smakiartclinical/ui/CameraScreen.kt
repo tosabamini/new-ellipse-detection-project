@@ -93,9 +93,10 @@ fun CameraScreen(viewModel: CameraViewModel) {
     val message           by viewModel.message.collectAsState()
     val btState           by viewModel.btState.collectAsState()
     val isRemoteRecording by viewModel.isRemoteRecording.collectAsState()
-    val ellipseResult       by viewModel.ellipseResult.collectAsState()
-    val isAnalysisRunning   by viewModel.isAnalysisRunning.collectAsState()
-    val showAnalysisScreen  by viewModel.showAnalysisScreen.collectAsState()
+    val ellipseResult        by viewModel.ellipseResult.collectAsState()
+    val isAnalysisRunning    by viewModel.isAnalysisRunning.collectAsState()
+    val showAnalysisScreen   by viewModel.showAnalysisScreen.collectAsState()
+    val currentOrientation   by viewModel.currentOrientation.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
     var dpadStep     by remember { mutableIntStateOf(10) }
@@ -135,7 +136,11 @@ fun CameraScreen(viewModel: CameraViewModel) {
         )
 
         // ── Layer 2: Ellipse overlay canvas (live preview analysis) ──────────
-        EllipseCanvas(result = ellipseResult, modifier = Modifier.fillMaxSize())
+        EllipseCanvas(
+            result = ellipseResult,
+            isReverseLandscape = currentOrientation == com.example.smakiartclinical.camera.DeviceOrientation.REVERSE_LANDSCAPE,
+            modifier = Modifier.fillMaxSize()
+        )
 
         // ── Layer 3: Overlay UI ───────────────────────────────────────────────
         Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -171,6 +176,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     isAnalysisRunning = isAnalysisRunning,
                     onToggleAnalysis  = { viewModel.toggleAnalysis() },
                     onFinishSession   = { viewModel.finishSession() },
+                    onOpenGallery     = { viewModel.openGallery() },
                     onOpenSettings    = { showSettings = true }
                 )
             }
@@ -265,7 +271,10 @@ fun CameraScreen(viewModel: CameraViewModel) {
             )
         }
 
-        // ── Layer 4: Photo analysis screen (full-screen, shown after capture) ─
+        // ── Layer 4: Image gallery ────────────────────────────────────────────
+        GalleryOverlay(viewModel = viewModel)
+
+        // ── Layer 5: Photo analysis screen (top-most when active) ─────────────
         if (showAnalysisScreen) {
             PhotoAnalysisScreen(
                 viewModel = viewModel,
@@ -276,19 +285,52 @@ fun CameraScreen(viewModel: CameraViewModel) {
 }
 
 // ── Ellipse overlay canvas ────────────────────────────────────────────────────
+//
+// The bitmap fed to EllipseAnalyzer is PORTRAIT-oriented (e.g. 864×1920) — getBitmap
+// returns the sensor-rotation-corrected GL texture content, which is naturally portrait.
+// The display is landscape, with applyPreviewTransform rotating the portrait content
+// -90° CCW (normal LANDSCAPE) or +90° CW (REVERSE_LANDSCAPE) and uniformly scaling
+// to fill.  We mirror that exact mapping here.
+//
+// For -90° CCW (normal LANDSCAPE):
+//   portrait +x  →  screen -y   (right in portrait = up on screen)
+//   portrait +y  →  screen +x   (down in portrait  = right on screen)
 
 @Composable
-private fun EllipseCanvas(result: EllipseResult?, modifier: Modifier = Modifier) {
+private fun EllipseCanvas(
+    result: EllipseResult?,
+    isReverseLandscape: Boolean,
+    modifier: Modifier = Modifier
+) {
     Canvas(modifier = modifier) {
         if (result == null) return@Canvas
-        val sx = size.width  / result.bitmapW
-        val sy = size.height / result.bitmapH
-        val cx = result.cxPx * sx
-        val cy = result.cyPx * sy
-        val halfMajor = result.majorPx * sx / 2f
-        val halfMinor = result.minorPx * sy / 2f
-        val pivot     = Offset(cx, cy)
-        withTransform({ rotate(result.angleDeg, pivot) }) {
+        val bmpW = result.bitmapW.toFloat()  // portrait width  (e.g. 864)
+        val bmpH = result.bitmapH.toFloat()  // portrait height (e.g. 1920)
+
+        // After -90° rotation the portrait's height (bmpH) maps to display width,
+        // its width (bmpW) maps to display height.  Match applyPreviewTransform's
+        // centre-crop scale formula.
+        val scale = maxOf(size.width / bmpH, size.height / bmpW)
+        val centerX = size.width / 2f
+        val centerY = size.height / 2f
+
+        val cx: Float
+        val cy: Float
+        val screenAngle: Float
+        if (!isReverseLandscape) {
+            cx = centerX + (result.cyPx - bmpH / 2f) * scale
+            cy = centerY - (result.cxPx - bmpW / 2f) * scale
+            screenAngle = result.angleDeg - 90f
+        } else {
+            cx = centerX - (result.cyPx - bmpH / 2f) * scale
+            cy = centerY + (result.cxPx - bmpW / 2f) * scale
+            screenAngle = result.angleDeg + 90f
+        }
+
+        val halfMajor = result.majorPx * scale / 2f
+        val halfMinor = result.minorPx * scale / 2f
+        val pivot = Offset(cx, cy)
+        withTransform({ rotate(screenAngle, pivot) }) {
             drawOval(
                 color   = Color(0xFF00FF80),
                 topLeft = Offset(cx - halfMajor, cy - halfMinor),
@@ -296,7 +338,6 @@ private fun EllipseCanvas(result: EllipseResult?, modifier: Modifier = Modifier)
                 style   = Stroke(width = 3f)
             )
         }
-        // Center crosshair
         val arm = 10f
         drawLine(Color(0xFF00FF80), Offset(cx - arm, cy), Offset(cx + arm, cy), strokeWidth = 2f)
         drawLine(Color(0xFF00FF80), Offset(cx, cy - arm), Offset(cx, cy + arm), strokeWidth = 2f)
@@ -508,6 +549,7 @@ private fun SessionPanel(
     isAnalysisRunning: Boolean,
     onToggleAnalysis: () -> Unit,
     onFinishSession: () -> Unit,
+    onOpenGallery: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     Column(
@@ -568,12 +610,23 @@ private fun SessionPanel(
             )
         }
 
-        TextButton(
-            onClick  = onFinishSession,
-            modifier = Modifier.fillMaxWidth(),
-            colors   = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF6B6B))
-        ) {
-            Text("End Session", fontSize = 12.sp)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(
+                onClick  = onOpenGallery,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 4.dp),
+                colors   = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80C8FF))
+            ) {
+                Text("Gallery", fontSize = 11.sp)
+            }
+            TextButton(
+                onClick  = onFinishSession,
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(horizontal = 4.dp),
+                colors   = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF6B6B))
+            ) {
+                Text("End", fontSize = 11.sp)
+            }
         }
     }
 }

@@ -74,6 +74,91 @@ They are persisted on `Screen_FrontCamera` via `SharedPreferences`.
 
 ---
 
+## Camera_RemoCon — Capture, Gallery & On-Device SCA
+
+The examiner's device runs the full clinical workflow end-to-end:
+capture → save → re-open from gallery → per-image ellipse analysis → patient-level
+S/C/A estimation via cosine fit.
+
+### Live preview overlay (real-time)
+
+While the camera is open, a background loop samples the TextureView (≈5 Hz),
+runs `EllipseAnalyzer` (port of `pipeline_v150526`'s AdaptDoG core), and
+overlays the detected ellipse in green on the preview.
+
+**Critical implementation detail.** `TextureView.getBitmap()` does **not**
+apply the `setTransform` matrix, so the bitmap is in *raw GL-texture*
+orientation — which for `SENSOR_ORIENTATION = 90°` is portrait
+(e.g. `864 × 1920`). Requesting `getBitmap(previewSize.width, previewSize.height)`
+forces portrait content into a landscape destination and produces a non-uniform
+stretch.
+
+  - **Correct call**: `tv.getBitmap(previewSize.height, previewSize.width)` →
+    portrait bitmap with no distortion.
+  - **Overlay mapping**: The Compose `EllipseCanvas` mirrors `applyPreviewTransform`'s
+    `-90° CCW` rotation and uniform scale to map portrait bitmap coordinates onto
+    the landscape display.  `REVERSE_LANDSCAPE` flips the rotation to `+90° CW`.
+
+### Capture flow
+
+1. **Shutter** → saves a JPEG only.  No automatic transition to an analysis screen.
+   Files go to `Pictures/SmaKIArtClinical/{patientId}/{eye}/IMG_{timestamp}.jpg`
+   (via MediaStore on Android Q+, direct file path on older devices).
+2. **3D / 10D shutters** → focus-pair capture (saves two JPEGs at preset focus distances).
+
+### Gallery (4-level navigation)
+
+Reachable from the **Gallery** button next to **End** in the session panel.
+
+```
+Patient list          → newest capture first; shows R/L counts per patient
+   ↓ tap patient
+Eye selector          → RIGHT / LEFT (disabled if no images)
+   ↓ tap eye
+Image list            → thumbnails + per-image "Analyze" button
+                       + "All Analyze" button in the top bar
+   ↓ tap "Analyze"            ↓ tap "All Analyze"
+Single-image           SCA result screen
+analysis (existing     - S, C, A, SE, R², n
+PhotoAnalysisScreen)   - Cos-curve plot (drawn in Compose Canvas)
+```
+
+EXIF Orientation is read in `PhotoFileManager.loadBitmap` so re-loaded photos
+analyse identically to live capture regardless of which physical orientation
+the device was held at when the JPEG was taken.
+
+### On-device SCA estimation
+
+`analysis/SCAEstimator.kt` ports `pipeline_v150526`'s cosine fit verbatim:
+
+```
+For each image i: run EllipseAnalyzer → (αᵢ = angleDeg, Dᵢ = dEst)
+Least-squares fit (3×3 normal equations, Cramer's rule):
+    D(α) = P₀ + P₁·cos(2α) + P₂·sin(2α)
+SE = P₀
+C  = -2·√(P₁² + P₂²)        (cylinder, minus notation)
+S  = SE - C/2
+A  = ½·atan2(-P₂, -P₁) mod 180°
+R² = 1 - SSres / SStot
+```
+
+Minimum sample count: **3 valid (α, D) pairs** (`SCAEstimator.MIN_VALID`).
+Photos for which `EllipseAnalyzer` fails or `dEst == null` are skipped.
+
+### Files added
+
+| File | Role |
+|---|---|
+| `analysis/EllipseAnalyzer.kt` | AdaptDoG → ratio → p → D₂ (per image) |
+| `analysis/SCAEstimator.kt` | Cosine fit → S/C/A (per patient × eye) |
+| `data/CapturedPhoto.kt` | `CapturedPhoto`, `PatientSummary` data classes |
+| `data/PhotoFileManager.kt` | Save (existing) + MediaStore enumeration + EXIF-aware load |
+| `ui/GalleryScreen.kt` | 4-level gallery navigation + cos-curve plot (no Coil dep.) |
+| `ui/PhotoAnalysisScreen.kt` | Single-image overlay analysis (reused from gallery) |
+| `ui/CameraViewModel.kt` | Live loop, gallery state machine, `runAllAnalyze` |
+
+---
+
 ## Video File Naming
 
 Front-camera recordings are saved to `Movies/SmaKIArtClinical/` with the pattern:

@@ -250,15 +250,83 @@ Results (see `experiments/method_compare_output/104_LEFT_variants/`):
 
 ---
 
+## Android implementation (SmartphoneApplication/SmaKIArt_Camera_RemoCon)
+
+End-to-end clinical app in Kotlin + Jetpack Compose. Geometry-only — no ML.
+Mirrors `pipeline_v150526` directly on-device.
+
+### Module layout
+
+| Path | Role |
+|---|---|
+| `analysis/EllipseAnalyzer.kt`    | AdaptDoG → ratio → p → D₂ per image (OpenCV for Android) |
+| `analysis/SCAEstimator.kt`       | Cosine fit `D=P₀+P₁cos2α+P₂sin2α` → S/C/A (port of `pipeline_v150526`) |
+| `analysis/EllipseConstants.kt`   | Calibration constants (S0/S1/S2, I0/I1/I2, A/B/C, P_MIN/P_MAX, SCALE_FACTOR, CROP_RATIO) |
+| `camera/CameraController.kt`     | Camera2 + manual ISO/exposure/focus + display transform |
+| `data/PhotoFileManager.kt`       | Save to MediaStore + enumerate gallery + EXIF-aware load |
+| `data/CapturedPhoto.kt`          | `CapturedPhoto`, `PatientSummary` |
+| `ui/CameraViewModel.kt`          | Live-preview loop, capture, gallery state machine, `runAllAnalyze` |
+| `ui/CameraScreen.kt`             | Preview + ellipse overlay canvas + UI panels |
+| `ui/GalleryScreen.kt`            | 4-level gallery (Patient → Eye → Image list → SCA result) + cos plot |
+| `ui/PhotoAnalysisScreen.kt`      | Single-image overlay analysis (reused from gallery) |
+
+### Storage path
+
+`Pictures/SmaKIArtClinical/{patientId}/{eye}/IMG_{timestamp}.jpg`
+(MediaStore on Android Q+, direct File on older).  `eye ∈ {RIGHT, LEFT}`.
+
+### Live-preview overlay — the `getBitmap` trap
+
+`TextureView.getBitmap()` does **not** include the `setTransform` matrix.  It
+returns the raw SurfaceTexture content, which is sensor-rotation-corrected to
+**portrait** for `SENSOR_ORIENTATION = 90°` even though `setDefaultBufferSize`
+is landscape (e.g. `1920×864`).
+
+Pitfall: requesting `getBitmap(previewSize.width, previewSize.height)` forces
+portrait content into a landscape destination → horizontal stretch.
+
+Correct call:
+
+```kotlin
+val ps = cameraController.getPreviewSize()
+tv.getBitmap(ps.height, ps.width)   // e.g. 864×1920, portrait, no distortion
+```
+
+Then `EllipseCanvas` must mirror `applyPreviewTransform`'s `-90° CCW` rotation
+and uniform scale to map portrait bitmap coords → landscape display coords:
+
+```kotlin
+val scale = maxOf(canvasW / bmpH, canvasH / bmpW)
+cx = centerX + (cyPx - bmpH/2) * scale
+cy = centerY - (cxPx - bmpW/2) * scale
+screenAngle = angleDeg - 90f   // (+90° for REVERSE_LANDSCAPE)
+```
+
+### Capture & gallery flow
+
+- Shutter → **save only** (no auto-navigation).  Live preview analysis keeps running.
+- SessionPanel exposes **Gallery** (next to **End**).
+- Gallery: Patient list (newest first) → Eye selector → Image list → per-image
+  Analyze (reuses `PhotoAnalysisScreen`) or **All Analyze**.
+- All Analyze: loads every JPEG, runs `EllipseAnalyzer`, accumulates `(αᵢ, Dᵢ)`,
+  fits via `SCAEstimator` (min 3 valid samples), shows S/C/A/SE/R²/n + cos-curve.
+
+### Calibration constants
+
+Centralised in `analysis/EllipseConstants.kt` — same values as
+`src/analysis/pupil_estimator.py` and `src/analysis/build_patient_model.py`.
+Update both Python and Kotlin together when recalibrating.
+
+---
+
 ## Next session roadmap (as of 2026-05-15)
 
-1. **Android integration** — port `pipeline_v150526` logic to Android (OpenCV for Android / JNI or Python-on-device via Chaquopy).  
-   Externalize all calibration constants (SCALE_FACTOR, pupil model coefficients, SCA fit parameters) to a config file or constants class so they can be updated without rebuilding the app.
+1. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
+   Known issues: axis error (~40° offset for 104_LEFT) and C overestimation (~2×) may be partially explained by stale reference data.  When new constants are ready, update `src/analysis/*.py` **and** `analysis/EllipseConstants.kt` in the Android app.
 
-2. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
-   Known issues: axis error (~40° offset for 104_LEFT) and C overestimation (~2×) may be partially explained by stale reference data.
+2. **More patient data** — run `pipeline_v150526` on additional patients; compare S/C/A outputs against ground-truth refraction records.
 
-3. **More patient data** — run `pipeline_v150526` on additional patients; compare S/C/A outputs against ground-truth refraction records.
+3. **Remove live-preview debug overlay** — the small `{bmpW}×{bmpH} angle=N°` text top-centre in `CameraScreen.kt:237` is left in place for verification.  Delete the `ellipseResult?.let { r -> Box(...) }` block when ready.
 
 ---
 

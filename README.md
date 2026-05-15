@@ -475,15 +475,27 @@ mapping are intentional approximations until the root cause is understood.
 
 ---
 
+## Android Application
+
+A clinical Android app under [`SmartphoneApplication/SmaKIArt_Camera_RemoCon/`](./SmartphoneApplication/) ports `pipeline_v150526` end-to-end on-device (Kotlin + Jetpack Compose + OpenCV for Android, no ML).
+
+- **Live preview ellipse overlay** — real-time `EllipseAnalyzer` on TextureView frames at ~5 Hz; D estimate displayed continuously.
+- **Capture** — manual ISO / Exposure / Focus, R/L eye toggle (orientation-driven), 3D/10D focus-pair shutter, JPEG saved to `Pictures/SmaKIArtClinical/{patientId}/{eye}/`.
+- **Gallery** — Patient list (newest first) → Eye selector → image list with per-image **Analyze** and **All Analyze** buttons.  All Analyze loads every photo for that patient × eye, runs `EllipseAnalyzer`, fits the cosine curve (`SCAEstimator.kt`), and shows S / C / A / SE / R² / n with the cos plot rendered in Compose Canvas.
+- **Min samples** — `SCAEstimator.MIN_VALID = 3` valid (α, D) pairs, same as `pipeline_v150526`.
+
+See [`SmartphoneApplication/README.md`](./SmartphoneApplication/README.md) for the dual-device protocol and [`CLAUDE.md`](./CLAUDE.md) for the `getBitmap` / `setTransform` gotcha and the module layout.
+
+---
+
 ## Next Session Roadmap (as of 2026-05-15)
 
-1. **Android integration** — port pipeline_v150526 to Android (OpenCV for Android / JNI).  
-   SCALE_FACTOR and reference calibration coefficients must be externalized (config file or constants class) so they can be updated without rebuilding.
+1. **Reference data retake** — recollect model eye images to recalibrate SCALE_FACTOR and the (ratio, area) → pupil model.  
+   Current SF = 1.3 is provisional; axis error (~40° off) and C overestimation (~2×) may be partly explained by stale reference data.  When new constants are ready, update `src/analysis/*.py` **and** Android `analysis/EllipseConstants.kt` together.
 
-2. **Reference data retake** — recollect model eye images to recalibrate SCALE_FACTOR and the (ratio, area) → pupil model.  
-   Current SF = 1.3 is provisional; axis error (~40° off) and C overestimation (~2×) may be partly explained by stale reference data.
+2. **More patient data** — run pipeline_v150526 on additional patients and compare estimated S/C/A to ground-truth refraction records.
 
-3. **More patient data** — run pipeline_v150526 on additional patients and compare estimated S/C/A to ground-truth refraction records.
+3. **Android polishing** — remove the live-preview debug overlay (`CameraScreen.kt:237`) once accuracy is verified in the field.
 
 ---
 

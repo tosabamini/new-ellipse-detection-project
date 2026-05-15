@@ -7,11 +7,16 @@ import android.graphics.Matrix
 import android.view.TextureView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
 import com.example.smakiartclinical.analysis.EllipseAnalyzer
 import com.example.smakiartclinical.analysis.EllipseResult
+import com.example.smakiartclinical.analysis.SCAEstimator
+import com.example.smakiartclinical.analysis.SCAResult
 import com.example.smakiartclinical.bluetooth.BluetoothClient
 import com.example.smakiartclinical.camera.CameraController
 import com.example.smakiartclinical.camera.DeviceOrientation
+import com.example.smakiartclinical.data.CapturedPhoto
+import com.example.smakiartclinical.data.PatientSummary
 import com.example.smakiartclinical.data.PhotoFileManager
 import com.example.smakiartclinical.data.PresetDataStore
 import com.example.smakiartclinical.data.model.CameraSettings
@@ -39,6 +44,14 @@ data class SessionState(
 data class UiMessage(val text: String, val id: Long = System.currentTimeMillis())
 
 enum class BtConnectionState { DISCONNECTED, SCANNING, CONNECTING, CONNECTED }
+
+sealed class GalleryView {
+    data object None         : GalleryView()
+    data object PatientList  : GalleryView()
+    data class  EyeSelector(val patientId: String) : GalleryView()
+    data class  ImageList(val patientId: String, val eye: String) : GalleryView()
+    data class  AllAnalyzeResult(val patientId: String, val eye: String, val result: SCAResult) : GalleryView()
+}
 
 class CameraViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -74,9 +87,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _isAnalysisRunning = MutableStateFlow(false)
     val isAnalysisRunning: StateFlow<Boolean> = _isAnalysisRunning.asStateFlow()
 
-    // ── Photo analysis screen ─────────────────────────────────────────────────
-    @Volatile private var lastCapturedBytes: ByteArray? = null
-    @Volatile private var lastCapturedOrientationDeg: Int = 0
+    // ── Photo analysis screen (entered from gallery) ─────────────────────────
 
     private val _showAnalysisScreen = MutableStateFlow(false)
     val showAnalysisScreen: StateFlow<Boolean> = _showAnalysisScreen.asStateFlow()
@@ -92,6 +103,23 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     private val _captureAnalysisAttempted = MutableStateFlow(false)
     val captureAnalysisAttempted: StateFlow<Boolean> = _captureAnalysisAttempted.asStateFlow()
+
+    // ── Gallery navigation ────────────────────────────────────────────────────
+
+    private val _galleryView = MutableStateFlow<GalleryView>(GalleryView.None)
+    val galleryView: StateFlow<GalleryView> = _galleryView.asStateFlow()
+
+    private val _patientSummaries = MutableStateFlow<List<PatientSummary>>(emptyList())
+    val patientSummaries: StateFlow<List<PatientSummary>> = _patientSummaries.asStateFlow()
+
+    private val _galleryPhotos = MutableStateFlow<List<CapturedPhoto>>(emptyList())
+    val galleryPhotos: StateFlow<List<CapturedPhoto>> = _galleryPhotos.asStateFlow()
+
+    private val _isRunningAllAnalyze = MutableStateFlow(false)
+    val isRunningAllAnalyze: StateFlow<Boolean> = _isRunningAllAnalyze.asStateFlow()
+
+    private val _allAnalyzeProgress = MutableStateFlow(0 to 0)  // (done, total)
+    val allAnalyzeProgress: StateFlow<Pair<Int, Int>> = _allAnalyzeProgress.asStateFlow()
 
     // ─────────────────────────────────────────────────────────────────────────
 
@@ -168,14 +196,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                         _isCapturing.value = false
                         _session.update { it.copy(capturedFiles = it.capturedFiles + filename) }
                         postMessage("Saved: $filename")
-                        // Navigate to photo analysis screen
-                        lastCapturedBytes = jpegBytes
-                        lastCapturedOrientationDeg = jpegOrientationDeg
-                        _capturedBitmap.value = null
-                        _captureAnalysisResult.value = null
-                        _captureAnalysisAttempted.value = false
-                        _showAnalysisScreen.value = true
-                        loadCapturedBitmapForDisplay(jpegBytes, jpegOrientationDeg)
                     }
                     CaptureMode.FOCUS_PAIR_FIRST -> {
                         _session.update { it.copy(capturedFiles = it.capturedFiles + filename) }
@@ -232,20 +252,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- Photo analysis screen ---
+    // --- Photo analysis screen (entered from gallery) ---
 
-    private fun loadCapturedBitmapForDisplay(bytes: ByteArray, orientationDeg: Int) {
-        viewModelScope.launch(Dispatchers.Default) {
-            try {
-                val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
-                var bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return@launch
-                if (orientationDeg != 0) {
-                    val m = Matrix(); m.postRotate(orientationDeg.toFloat())
-                    val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-                    bmp.recycle(); bmp = rotated
-                }
-                _capturedBitmap.value = bmp
-            } catch (_: Exception) {}
+    /** Load a saved photo by Uri, then show PhotoAnalysisScreen. */
+    fun openPhotoForAnalysis(uri: Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val bmp = photoFileManager.loadBitmap(uri)
+            if (bmp == null) { postMessage("Failed to load image"); return@launch }
+            _capturedBitmap.value = bmp
+            _captureAnalysisResult.value = null
+            _captureAnalysisAttempted.value = false
+            _showAnalysisScreen.value = true
         }
     }
 
@@ -266,9 +283,84 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun dismissAnalysisScreen() {
         _showAnalysisScreen.value = false
+        _capturedBitmap.value?.recycle()
         _capturedBitmap.value = null
         _captureAnalysisResult.value = null
         _captureAnalysisAttempted.value = false
+    }
+
+    // --- Gallery navigation ---
+
+    fun openGallery() {
+        refreshPatientList()
+        _galleryView.value = GalleryView.PatientList
+    }
+
+    fun closeGallery() { _galleryView.value = GalleryView.None }
+
+    fun galleryOpenPatient(patientId: String) {
+        _galleryView.value = GalleryView.EyeSelector(patientId)
+    }
+
+    fun galleryOpenEye(patientId: String, eye: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _galleryPhotos.value = photoFileManager.listPhotosFor(patientId, eye)
+            _galleryView.value = GalleryView.ImageList(patientId, eye)
+        }
+    }
+
+    fun galleryBack() {
+        when (val v = _galleryView.value) {
+            is GalleryView.AllAnalyzeResult -> _galleryView.value = GalleryView.ImageList(v.patientId, v.eye)
+            is GalleryView.ImageList        -> _galleryView.value = GalleryView.EyeSelector(v.patientId)
+            is GalleryView.EyeSelector      -> { refreshPatientList(); _galleryView.value = GalleryView.PatientList }
+            GalleryView.PatientList         -> _galleryView.value = GalleryView.None
+            GalleryView.None                -> Unit
+        }
+    }
+
+    private fun refreshPatientList() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _patientSummaries.value = photoFileManager.listPatientSummaries()
+        }
+    }
+
+    suspend fun loadThumbnail(uri: Uri): Bitmap? = withContext(Dispatchers.IO) {
+        photoFileManager.loadBitmap(uri, inSampleSize = 8)
+    }
+
+    fun runAllAnalyze(patientId: String, eye: String) {
+        if (_isRunningAllAnalyze.value) return
+        _isRunningAllAnalyze.value = true
+        _allAnalyzeProgress.value = 0 to 0
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val photos = photoFileManager.listPhotosFor(patientId, eye)
+                _allAnalyzeProgress.value = 0 to photos.size
+                if (photos.isEmpty()) { postMessage("No images for $patientId / $eye"); return@launch }
+                val samples = mutableListOf<SCAResult.Sample>()
+                photos.forEachIndexed { i, photo ->
+                    val bmp = photoFileManager.loadBitmap(photo.uri, inSampleSize = 2)
+                    if (bmp != null) {
+                        val res = ellipseAnalyzer.analyze(bmp)
+                        bmp.recycle()
+                        val d = res?.dEst
+                        if (res != null && d != null) {
+                            samples += SCAResult.Sample(res.angleDeg, d)
+                        }
+                    }
+                    _allAnalyzeProgress.value = (i + 1) to photos.size
+                }
+                val sca = SCAEstimator.fit(samples)
+                if (sca == null) {
+                    postMessage("Need ≥${SCAEstimator.MIN_VALID} valid D samples (got ${samples.size}/${photos.size})")
+                } else {
+                    _galleryView.value = GalleryView.AllAnalyzeResult(patientId, eye, sca)
+                }
+            } finally {
+                _isRunningAllAnalyze.value = false
+            }
+        }
     }
 
     private fun startAnalysisLoop() {
@@ -279,7 +371,10 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 try {
                     val bitmap = withContext(Dispatchers.Main) {
                         val tv = previewTextureView
-                        if (tv != null && tv.isAvailable) tv.bitmap else null
+                        val ps = cameraController.getPreviewSize()
+                        // GL texture content is portrait-oriented (sensor-rotation-corrected).
+                        // Request a portrait-shaped destination so it fits without distortion.
+                        if (tv != null && tv.isAvailable) tv.getBitmap(ps.height, ps.width) else null
                     }
                     if (bitmap != null) {
                         val result = ellipseAnalyzer.analyze(bitmap)

@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.ImageFormat
 import android.graphics.Matrix
+import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
@@ -42,6 +43,7 @@ class CameraController(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var retryCount = 0
+    private var previewSize: android.util.Size = android.util.Size(1920, 1080)
 
     companion object {
         private const val MAX_PREVIEW_EXPOSURE_NS = 200_000_000L  // 200 ms
@@ -66,17 +68,32 @@ class CameraController(private val context: Context) {
 
     fun getCharacteristics(): CameraCharacteristics? = characteristics
 
+    fun getPreviewSize(): android.util.Size = previewSize
+
     @SuppressLint("MissingPermission")
     fun openCamera(textureView: TextureView) {
         previewTextureView = textureView
-        previewSurface?.release()
-        previewSurface = Surface(textureView.surfaceTexture)
 
         val cameraId = findBackFacingCamera() ?: run {
             listener?.onCameraError("No back-facing camera found")
             return
         }
         characteristics = cameraManager.getCameraCharacteristics(cameraId)
+
+        // Choose preview size from camera capabilities, then declare it to the
+        // SurfaceTexture BEFORE wrapping it in a Surface. This ensures the camera
+        // driver knows the requested buffer dimensions and getBitmap() returns
+        // content at a well-defined resolution.
+        characteristics!!
+            .get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+            ?.getOutputSizes(SurfaceTexture::class.java)
+            ?.let { sizes ->
+                previewSize = choosePreviewSize(sizes, textureView.width, textureView.height)
+            }
+        textureView.surfaceTexture?.setDefaultBufferSize(previewSize.width, previewSize.height)
+
+        previewSurface?.release()
+        previewSurface = Surface(textureView.surfaceTexture)
 
         cameraManager.openCamera(cameraId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
@@ -109,6 +126,18 @@ class CameraController(private val context: Context) {
             cameraManager.getCameraCharacteristics(id)
                 .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
         }
+    }
+
+    private fun choosePreviewSize(
+        choices: Array<android.util.Size>, viewW: Int, viewH: Int
+    ): android.util.Size {
+        // Target: closest aspect ratio to the view, longer side ≤ 1920 px.
+        val targetAspect = if (viewW > 0 && viewH > 0) viewW.toFloat() / viewH else 16f / 9f
+        return choices
+            .filter { maxOf(it.width, it.height) <= 1920 }
+            .minByOrNull { kotlin.math.abs(it.width.toFloat() / it.height.toFloat() - targetAspect) }
+            ?: choices.minByOrNull { it.width * it.height }
+            ?: android.util.Size(1920, 1080)
     }
 
     private fun setupImageReader() {
@@ -161,31 +190,38 @@ class CameraController(private val context: Context) {
     /**
      * Applies a TextureView transform so the preview appears upright on screen.
      *
-     * The aspect-ratio swap (bufferRect has swapped w/h) combined with setRectToRect corrects
-     * for the camera sensor delivering portrait-oriented frames into a landscape-sized surface.
-     * postRotate then spins the result so it reads naturally.
-     *
-     * With sensorLandscape, the window physically rotates between ROTATION_90 and ROTATION_270.
-     * The TextureView lives inside that window, so its effective rendering flips 180° when the
-     * window does. We compensate by inverting the rotation sign in reverse landscape:
+     * The camera delivers frames in sensor-native orientation (rotated 90° or 270° from the
+     * display). The standard Camera2 pattern swaps the preview dimensions in bufferRect to
+     * model that rotated footprint, then postScale fills the view (centre-crop, no black bars),
+     * then postRotate corrects the sensor angle.
      *
      *   displayRotationDegrees = 90  (normal landscape)    → postRotate(-90°)
      *   displayRotationDegrees = 270 (reverse landscape)   → postRotate(+90°)
-     *
-     * The sign flip is exactly the 180° needed to cancel the window-level rotation.
      */
     private fun applyPreviewTransform() {
         val tv = previewTextureView ?: return
         if (tv.width == 0 || tv.height == 0) return
 
-        val viewRect = android.graphics.RectF(0f, 0f, tv.width.toFloat(), tv.height.toFloat())
-        val bufferRect = android.graphics.RectF(0f, 0f, tv.height.toFloat(), tv.width.toFloat())
-        val centerX = viewRect.centerX()
-        val centerY = viewRect.centerY()
+        val viewW = tv.width.toFloat()
+        val viewH = tv.height.toFloat()
+        val centerX = viewW / 2f
+        val centerY = viewH / 2f
+
+        // Swap previewSize dims to represent the sensor-native (portrait) content footprint.
+        val viewRect   = android.graphics.RectF(0f, 0f, viewW, viewH)
+        val bufferRect = android.graphics.RectF(
+            0f, 0f,
+            previewSize.height.toFloat(),
+            previewSize.width.toFloat()
+        )
         bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
 
         val matrix = Matrix()
         matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
+
+        // Scale to fill the view (centre-crop): no black bars on either axis.
+        val scale = maxOf(viewH / previewSize.height, viewW / previewSize.width)
+        matrix.postScale(scale, scale, centerX, centerY)
 
         val rotateDeg = if (displayRotationDegrees == 270) 90f else -90f
         matrix.postRotate(rotateDeg, centerX, centerY)
