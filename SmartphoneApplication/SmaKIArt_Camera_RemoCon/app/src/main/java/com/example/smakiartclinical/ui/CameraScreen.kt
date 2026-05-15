@@ -233,6 +233,23 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 }
             }
 
+            // Debug: bitmap size + detected angle (remove when live-preview alignment is fixed)
+            ellipseResult?.let { r ->
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 4.dp)
+                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                        .padding(horizontal = 8.dp, vertical = 3.dp)
+                ) {
+                    Text(
+                        "${r.bitmapW}×${r.bitmapH} angle=${r.angleDeg.toInt()}°",
+                        color    = Color.Cyan,
+                        fontSize = 10.sp
+                    )
+                }
+            }
+
             // Bottom: Shutter controls + Start REC — no background, lifted 8dp, shifted 10dp right
             BottomShutterBar(
                 modifier = Modifier
