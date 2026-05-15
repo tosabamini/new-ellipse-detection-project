@@ -1,6 +1,9 @@
 package com.example.smakiartclinical.ui
 
 import android.app.Application
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.view.TextureView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -71,6 +74,27 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _isAnalysisRunning = MutableStateFlow(false)
     val isAnalysisRunning: StateFlow<Boolean> = _isAnalysisRunning.asStateFlow()
 
+    // ── Photo analysis screen ─────────────────────────────────────────────────
+    @Volatile private var lastCapturedBytes: ByteArray? = null
+    @Volatile private var lastCapturedOrientationDeg: Int = 0
+
+    private val _showAnalysisScreen = MutableStateFlow(false)
+    val showAnalysisScreen: StateFlow<Boolean> = _showAnalysisScreen.asStateFlow()
+
+    private val _capturedBitmap = MutableStateFlow<Bitmap?>(null)
+    val capturedBitmap: StateFlow<Bitmap?> = _capturedBitmap.asStateFlow()
+
+    private val _captureAnalysisResult = MutableStateFlow<EllipseResult?>(null)
+    val captureAnalysisResult: StateFlow<EllipseResult?> = _captureAnalysisResult.asStateFlow()
+
+    private val _isAnalyzingCapture = MutableStateFlow(false)
+    val isAnalyzingCapture: StateFlow<Boolean> = _isAnalyzingCapture.asStateFlow()
+
+    private val _captureAnalysisAttempted = MutableStateFlow(false)
+    val captureAnalysisAttempted: StateFlow<Boolean> = _captureAnalysisAttempted.asStateFlow()
+
+    // ─────────────────────────────────────────────────────────────────────────
+
     private val _settings = MutableStateFlow(CameraSettings())
     val settings: StateFlow<CameraSettings> = _settings.asStateFlow()
 
@@ -138,12 +162,20 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 if (wasInFocusPair) cameraController.updateSettings(_settings.value)
             }
 
-            override fun onCaptureSaved(filename: String) {
+            override fun onCaptureSaved(filename: String, jpegBytes: ByteArray, jpegOrientationDeg: Int) {
                 when (captureMode) {
                     CaptureMode.NONE -> {
                         _isCapturing.value = false
                         _session.update { it.copy(capturedFiles = it.capturedFiles + filename) }
                         postMessage("Saved: $filename")
+                        // Navigate to photo analysis screen
+                        lastCapturedBytes = jpegBytes
+                        lastCapturedOrientationDeg = jpegOrientationDeg
+                        _capturedBitmap.value = null
+                        _captureAnalysisResult.value = null
+                        _captureAnalysisAttempted.value = false
+                        _showAnalysisScreen.value = true
+                        loadCapturedBitmapForDisplay(jpegBytes, jpegOrientationDeg)
                     }
                     CaptureMode.FOCUS_PAIR_FIRST -> {
                         _session.update { it.copy(capturedFiles = it.capturedFiles + filename) }
@@ -198,6 +230,45 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             _isAnalysisRunning.value = true
             startAnalysisLoop()
         }
+    }
+
+    // --- Photo analysis screen ---
+
+    private fun loadCapturedBitmapForDisplay(bytes: ByteArray, orientationDeg: Int) {
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+                var bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return@launch
+                if (orientationDeg != 0) {
+                    val m = Matrix(); m.postRotate(orientationDeg.toFloat())
+                    val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+                    bmp.recycle(); bmp = rotated
+                }
+                _capturedBitmap.value = bmp
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun analyzeCapture() {
+        val bitmap = _capturedBitmap.value ?: return
+        if (_isAnalyzingCapture.value) return
+        _isAnalyzingCapture.value = true
+        _captureAnalysisResult.value = null
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                _captureAnalysisResult.value = ellipseAnalyzer.analyze(bitmap)
+            } finally {
+                _captureAnalysisAttempted.value = true
+                _isAnalyzingCapture.value = false
+            }
+        }
+    }
+
+    fun dismissAnalysisScreen() {
+        _showAnalysisScreen.value = false
+        _capturedBitmap.value = null
+        _captureAnalysisResult.value = null
+        _captureAnalysisAttempted.value = false
     }
 
     private fun startAnalysisLoop() {

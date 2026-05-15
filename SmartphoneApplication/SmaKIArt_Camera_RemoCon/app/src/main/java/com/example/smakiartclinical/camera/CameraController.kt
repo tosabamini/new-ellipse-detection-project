@@ -24,7 +24,7 @@ class CameraController(private val context: Context) {
     interface Listener {
         fun onCameraOpened()
         fun onCameraError(error: String)
-        fun onCaptureSaved(filename: String)
+        fun onCaptureSaved(filename: String, jpegBytes: ByteArray, jpegOrientationDeg: Int)
         fun onCaptureError(error: String)
     }
 
@@ -213,6 +213,9 @@ class CameraController(private val context: Context) {
         }
         val chars = characteristics ?: return
 
+        val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+        val jpegOrientation = (sensorOrientation - displayRotationDegrees + 360) % 360
+
         reader.setOnImageAvailableListener({ r ->
             val image = r.acquireLatestImage() ?: return@setOnImageAvailableListener
             try {
@@ -222,16 +225,13 @@ class CameraController(private val context: Context) {
                 outputStream.write(bytes)
                 outputStream.flush()
                 outputStream.close()
-                listener?.onCaptureSaved(filename)
+                listener?.onCaptureSaved(filename, bytes, jpegOrientation)
             } catch (e: Exception) {
                 listener?.onCaptureError("Save failed: ${e.message}")
             } finally {
                 image.close()
             }
         }, backgroundHandler)
-
-        val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
-        val jpegOrientation = (sensorOrientation - displayRotationDegrees + 360) % 360
 
         val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
             addTarget(reader.surface)

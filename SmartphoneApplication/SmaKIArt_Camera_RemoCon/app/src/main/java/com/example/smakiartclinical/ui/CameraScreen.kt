@@ -95,6 +95,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
     val isRemoteRecording by viewModel.isRemoteRecording.collectAsState()
     val ellipseResult       by viewModel.ellipseResult.collectAsState()
     val isAnalysisRunning   by viewModel.isAnalysisRunning.collectAsState()
+    val showAnalysisScreen  by viewModel.showAnalysisScreen.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
     var dpadStep     by remember { mutableIntStateOf(10) }
@@ -133,7 +134,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
             }
         )
 
-        // ── Layer 2: Ellipse overlay canvas ──────────────────────────────────
+        // ── Layer 2: Ellipse overlay canvas (live preview analysis) ──────────
         EllipseCanvas(result = ellipseResult, modifier = Modifier.fillMaxSize())
 
         // ── Layer 3: Overlay UI ───────────────────────────────────────────────
@@ -244,6 +245,14 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 onCapture10D      = { viewModel.captureFocusPair10D() },
                 onVideoStart      = { viewModel.sendVideoStart() },
                 onVideoStop       = { viewModel.sendVideoStop() }
+            )
+        }
+
+        // ── Layer 4: Photo analysis screen (full-screen, shown after capture) ─
+        if (showAnalysisScreen) {
+            PhotoAnalysisScreen(
+                viewModel = viewModel,
+                onDismiss = { viewModel.dismissAnalysisScreen() }
             )
         }
     }
