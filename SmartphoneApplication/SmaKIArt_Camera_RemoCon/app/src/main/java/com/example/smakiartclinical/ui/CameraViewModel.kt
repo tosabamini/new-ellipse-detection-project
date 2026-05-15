@@ -68,6 +68,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _ellipseResult = MutableStateFlow<EllipseResult?>(null)
     val ellipseResult: StateFlow<EllipseResult?> = _ellipseResult.asStateFlow()
 
+    private val _isAnalysisRunning = MutableStateFlow(false)
+    val isAnalysisRunning: StateFlow<Boolean> = _isAnalysisRunning.asStateFlow()
+
     private val _settings = MutableStateFlow(CameraSettings())
     val settings: StateFlow<CameraSettings> = _settings.asStateFlow()
 
@@ -124,7 +127,6 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun openCamera(textureView: TextureView) {
         previewTextureView = textureView
-        startAnalysisLoop()
         cameraController.setListener(object : CameraController.Listener {
             override fun onCameraOpened() {}
 
@@ -178,6 +180,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun closeCamera() {
+        _isAnalysisRunning.value = false
         analysisJob?.cancel()
         analysisJob = null
         previewTextureView = null
@@ -185,11 +188,23 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         cameraController.close()
     }
 
+    fun toggleAnalysis() {
+        if (_isAnalysisRunning.value) {
+            _isAnalysisRunning.value = false
+            analysisJob?.cancel()
+            analysisJob = null
+            _ellipseResult.value = null
+        } else {
+            _isAnalysisRunning.value = true
+            startAnalysisLoop()
+        }
+    }
+
     private fun startAnalysisLoop() {
         analysisJob?.cancel()
         analysisJob = viewModelScope.launch(Dispatchers.Default) {
-            delay(1200L)  // wait for camera preview to stabilize
-            while (isActive) {
+            delay(800L)  // wait for camera preview to stabilize
+            while (isActive && _isAnalysisRunning.value) {
                 try {
                     val bitmap = withContext(Dispatchers.Main) {
                         val tv = previewTextureView

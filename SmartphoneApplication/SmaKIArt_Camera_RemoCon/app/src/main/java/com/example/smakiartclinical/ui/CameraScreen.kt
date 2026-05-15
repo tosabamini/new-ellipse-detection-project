@@ -93,7 +93,8 @@ fun CameraScreen(viewModel: CameraViewModel) {
     val message           by viewModel.message.collectAsState()
     val btState           by viewModel.btState.collectAsState()
     val isRemoteRecording by viewModel.isRemoteRecording.collectAsState()
-    val ellipseResult     by viewModel.ellipseResult.collectAsState()
+    val ellipseResult       by viewModel.ellipseResult.collectAsState()
+    val isAnalysisRunning   by viewModel.isAnalysisRunning.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
     var dpadStep     by remember { mutableIntStateOf(10) }
@@ -166,6 +167,8 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     onPatientIdChange = { viewModel.setPatientId(it) },
                     selectedEye       = session.selectedEye,
                     onEyeSelect       = { viewModel.setSelectedEye(it) },
+                    isAnalysisRunning = isAnalysisRunning,
+                    onToggleAnalysis  = { viewModel.toggleAnalysis() },
                     onFinishSession   = { viewModel.finishSession() },
                     onOpenSettings    = { showSettings = true }
                 )
@@ -476,6 +479,8 @@ private fun SessionPanel(
     onPatientIdChange: (String) -> Unit,
     selectedEye: String,
     onEyeSelect: (String) -> Unit,
+    isAnalysisRunning: Boolean,
+    onToggleAnalysis: () -> Unit,
     onFinishSession: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
@@ -522,6 +527,20 @@ private fun SessionPanel(
         )
 
         EyeToggleButtons(selected = selectedEye, onSelect = onEyeSelect)
+
+        Button(
+            onClick  = onToggleAnalysis,
+            modifier = Modifier.fillMaxWidth(),
+            colors   = ButtonDefaults.buttonColors(
+                containerColor = if (isAnalysisRunning) Color(0xFFB71C1C) else Color(0xFF1B5E20)
+            )
+        ) {
+            Text(
+                text     = if (isAnalysisRunning) "■ Stop Analysis" else "▶ Start Analysis",
+                fontSize = 12.sp,
+                color    = Color.White
+            )
+        }
 
         TextButton(
             onClick  = onFinishSession,
