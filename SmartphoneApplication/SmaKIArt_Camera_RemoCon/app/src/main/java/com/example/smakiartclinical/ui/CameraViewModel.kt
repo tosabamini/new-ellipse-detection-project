@@ -277,11 +277,22 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             delay(800L)  // wait for camera preview to stabilize
             while (isActive && _isAnalysisRunning.value) {
                 try {
-                    val bitmap = withContext(Dispatchers.Main) {
+                    val rawBitmap = withContext(Dispatchers.Main) {
                         val tv = previewTextureView
                         if (tv != null && tv.isAvailable) tv.bitmap else null
                     }
-                    if (bitmap != null) {
+                    if (rawBitmap != null) {
+                        // textureView.bitmap returns the raw SurfaceTexture content
+                        // without the display transform applied. Rotate to match the
+                        // display: applyPreviewTransform uses -90° for normal landscape
+                        // and +90° for reverse landscape — apply the same rotation here.
+                        val rotateDeg = if (cameraController.displayRotationDegrees == 270) 90f else -90f
+                        val m = Matrix()
+                        m.postRotate(rotateDeg)
+                        val bitmap = Bitmap.createBitmap(
+                            rawBitmap, 0, 0, rawBitmap.width, rawBitmap.height, m, true
+                        )
+                        rawBitmap.recycle()
                         val result = ellipseAnalyzer.analyze(bitmap)
                         _ellipseResult.value = result
                         bitmap.recycle()
