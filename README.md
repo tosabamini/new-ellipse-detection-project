@@ -488,14 +488,72 @@ See [`SmartphoneApplication/README.md`](./SmartphoneApplication/README.md) for t
 
 ---
 
-## Next Session Roadmap (as of 2026-05-15)
+## Simulation Data Pipeline
 
-1. **Reference data retake** — recollect model eye images to recalibrate SCALE_FACTOR and the (ratio, area) → pupil model.  
+Optical simulation images (`data/Simulation/`) provide ground-truth ellipses at known refraction powers for building ratio–D fitting models independent of physical model eye measurements.
+
+### Data layout
+
+```
+data/Simulation/
+├── p10/  camera_p10_D000.png  camera_p10_Dm25.png ... camera_p10_Dp800.png
+├── p15/  ...
+└── p45/
+```
+
+`p<N>` = pupil radius; `D000` = 0.00 D, `Dm<N>` = −N/100 D, `Dp<N>` = +N/100 D. Ignore `.ras` files.
+
+### Crop settings
+
+Simulation images require a different crop from patient data:  
+**60% keep, centre shifted 10% left** (`CROP_RATIO=0.60, LEFT_SHIFT=0.10`).
+
+### Workflow
+
+```bash
+# STEP 1: generate roi/ crops (also runs AdaptDoG, but auto-fitting is unreliable on Simulation)
+python -m src.pipeline.pipeline_simulation --run_name sim_run01
+
+# STEP 2: annotate roi/ in Labelme (label = "red_reflex"), then:
+# STEP 3: JSON → ellipse fitting per pupil group
+python -m src.pipeline.simulation_ellipse_from_json --run_name sim_run01 --pupil_group p30
+python -m src.pipeline.simulation_ellipse_from_json --run_name sim_run01  # all groups
+
+# STEP 4: fitting analysis
+python experiments/simulation_p30_fit_full.py
+```
+
+### Fitting model (p30, 2026-06-01)
+
+Adopted: **C⁰ Logistic anchored at D=0**, fitted separately for myopia (D≤0) and hyperopia (D≥0).
+
+```
+ratio(|D|) = a / (1 + exp(-k·(|D| - x0))) + offset
+             where offset = ratio_0 - a/(1+exp(k·x0))   [ensures f(0) = ratio_0]
+```
+
+| Side | a | k | x₀ | R² |
+|---|---|---|---|---|
+| Myopia | 1.0062 | 0.7814 | 3.4325 | 0.9962 |
+| Hyperopia | 0.7336 | 0.5323 | 3.5265 | 0.9916 |
+
+ratio_0 = 0.0204 (measured 0D value, shared anchor).  
+Both curves meet at D=0 (C⁰ cusp); the asymmetry (myopia saturates at ~0.97, hyperopia at ~0.65 for ±8D) reflects the physical vignetting difference.
+
+**Status (2026-06-01):** p30 fully annotated and fitted. Other pupil groups (p10–p45) pending.
+
+---
+
+## Next Session Roadmap (as of 2026-06-01)
+
+1. **Simulation — extend to all pupil groups** — annotate p10, p15, p20, p25, p35, p40, p45 with Labelme → run `simulation_ellipse_from_json` → fit and integrate across pupil groups.
+
+2. **Reference data retake** — recollect model eye images to recalibrate SCALE_FACTOR and the (ratio, area) → pupil model.  
    Current SF = 1.3 is provisional; axis error (~40° off) and C overestimation (~2×) may be partly explained by stale reference data.  When new constants are ready, update `src/analysis/*.py` **and** Android `analysis/EllipseConstants.kt` together.
 
-2. **More patient data** — run pipeline_v150526 on additional patients and compare estimated S/C/A to ground-truth refraction records.
+3. **More patient data** — run pipeline_v150526 on additional patients and compare estimated S/C/A to ground-truth refraction records.
 
-3. **Android polishing** — remove the live-preview debug overlay (`CameraScreen.kt:237`) once accuracy is verified in the field.
+4. **Android polishing** — remove the live-preview debug overlay (`CameraScreen.kt:237`) once accuracy is verified in the field.
 
 ---
 

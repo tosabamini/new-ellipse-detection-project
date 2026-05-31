@@ -14,8 +14,10 @@ PROCESSED_DIR = DATA_DIR / "processed"
 ANNOTATIONS_DIR = DATA_DIR / "annotations"
 
 PATIENT_DATA_DIR = RAW_DIR / "patient_data"
+SIMULATION_DIR   = DATA_DIR / "Simulation"
 
 # processed
+SIMULATION_RUNS_DIR = PROCESSED_DIR / "simulation_runs"
 REDENHANCE_DIR = PROCESSED_DIR / "redenhance"
 CLASSIFY_INPUTS_DIR = PROCESSED_DIR / "classify_inputs"
 CLASSIFY_OUTPUTS_DIR = PROCESSED_DIR / "classify_outputs"

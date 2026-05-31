@@ -24,13 +24,13 @@ VERY_DARK_CLAHE_CLIP = 1.0
 CLAHE_GRID = (8, 8)
 
 
-def center_crop(img, crop_ratio=CROP_RATIO):
+def center_crop(img, crop_ratio=CROP_RATIO, left_shift=0.0):
     h, w = img.shape[:2]
 
     crop_w = int(w * crop_ratio)
     crop_h = int(h * crop_ratio)
 
-    center_x = w // 2
+    center_x = w // 2 - int(w * left_shift)
     center_y = h // 2
 
     x1 = max(center_x - crop_w // 2, 0)

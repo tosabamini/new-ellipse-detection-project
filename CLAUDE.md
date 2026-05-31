@@ -9,6 +9,8 @@ Two parallel pipelines:
 
 A secondary workflow generates reference ellipse data from a model eye at known refraction powers, used as calibration data for refraction estimation.
 
+A third workflow uses **optical simulation data** (`data/Simulation/`) to derive ratio–D fitting models directly from ray-traced images at known refraction powers.
+
 ---
 
 ## Architecture overview
@@ -16,7 +18,7 @@ A secondary workflow generates reference ellipse data from a model eye at known 
 All processing logic lives in `src/`. Paths are centralized in `src/common/paths.py` — always import from there, never hardcode paths.
 
 Key modules:
-- `src/preprocessing/preprocess_utils.py` — RedEnhance core (`center_crop`, `process_red_by_mode`, etc.)
+- `src/preprocessing/preprocess_utils.py` — RedEnhance core (`center_crop(img, crop_ratio, left_shift=0.0)`, `process_red_by_mode`, etc.)
 - `src/classify/classifier_model.py` — SmallClassifier (1-ch CNN, input 160×72, threshold 0.9)
 - `src/segmentation/segmentation_model.py` — UNetSmall (1-ch input/output, threshold 0.5)
 - `src/ellipse/ellipse_utils.py` — `fit_ellipse_from_mask`, `make_pred_overlay`, `add_text_block`
@@ -26,6 +28,8 @@ Key modules:
 - `src/pipeline/run_model_eye.py` — model eye batch runner; imports directly from `main.py`
 - `src/pipeline/make_report.py` — report image generator: cos-curve, ellipse grid, classify grid per patient; angle-bin summary CSV
 - `src/pipeline/pipeline_v150526.py` — **[v150526]** geometry-only end-to-end pipeline (Raw → SCA, no ML); CLI: `--patient_ids`, `--run_name`, `--exclude_prefixes`
+- `src/pipeline/pipeline_simulation.py` — **[Simulation]** Simulation data pipeline (Raw PNG → ellipse fitting); crop 60% keep + 10% left shift; CLI: `--run_name`, `--pupil_groups`
+- `src/pipeline/simulation_ellipse_from_json.py` — **[Simulation]** Labelme JSON → mask → `fit_ellipse_from_mask` → `per_image_label.csv`; CLI: `--run_name`, `--pupil_group`
 - `src/analysis/build_patient_model.py` — model eye reference calibration; `estimate_D_from_ratio_and_p(ratio, p)` → (D1, D2)
 - `src/analysis/refraction_estimator.py` — refraction pipeline module; per-image D estimation + SCA trigonometric fit
 - `src/analysis/pupil_estimator.py` — **[v150526]** pupil diameter estimation from (ratio, area_scaled) via quadratic formula; `SCALE_FACTOR=1.3` (暫定)
@@ -51,8 +55,14 @@ data/
 │           └── *.jpg
 ├── processed/
 │   ├── pipeline_runs/        # output of src/pipeline/main.py
-│   └── model_eye_runs/       # output of src/pipeline/run_model_eye.py
-└── annotations/
+│   ├── model_eye_runs/       # output of src/pipeline/run_model_eye.py
+│   └── simulation_runs/      # output of src/pipeline/pipeline_simulation.py
+├── annotations/
+└── Simulation/               # optical simulation images (ray-traced)
+    ├── p10/                  # pupil radius 10 units — camera_p10_<D>.png / .ras
+    ├── p15/
+    ├── ...
+    └── p45/
 ```
 
 ### Model eye folder naming
@@ -319,14 +329,114 @@ Update both Python and Kotlin together when recalibrating.
 
 ---
 
-## Next session roadmap (as of 2026-05-15)
+## Next session roadmap (as of 2026-06-01)
 
-1. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
+1. **Simulation pipeline — extend to all pupil groups** — p30 (myopia + hyperopia) annotated and fitted. Next: annotate p10, p15, p20, p25, p35, p40, p45 with Labelme (`roi/` フォルダ、ラベル名 `red_reflex`) → run `simulation_ellipse_from_json` per group → run `simulation_p30_fit_full` variant per group → integrate across pupil groups to build a unified ratio–D model.
+
+2. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
    Known issues: axis error (~40° offset for 104_LEFT) and C overestimation (~2×) may be partially explained by stale reference data.  When new constants are ready, update `src/analysis/*.py` **and** `analysis/EllipseConstants.kt` in the Android app.
 
-2. **More patient data** — run `pipeline_v150526` on additional patients; compare S/C/A outputs against ground-truth refraction records.
+3. **More patient data** — run `pipeline_v150526` on additional patients; compare S/C/A outputs against ground-truth refraction records.
 
-3. **Remove live-preview debug overlay** — the small `{bmpW}×{bmpH} angle=N°` text top-centre in `CameraScreen.kt:237` is left in place for verification.  Delete the `ellipseResult?.let { r -> Box(...) }` block when ready.
+4. **Remove live-preview debug overlay** — the small `{bmpW}×{bmpH} angle=N°` text top-centre in `CameraScreen.kt:237` is left in place for verification.  Delete the `ellipseResult?.let { r -> Box(...) }` block when ready.
+
+---
+
+## Simulation data pipeline (2026-06-01)
+
+### Data layout
+
+```
+data/Simulation/
+├── p10/   camera_p10_D000.png  camera_p10_Dm25.png  ...  camera_p10_Dp800.png
+├── p15/   (same structure)
+├── ...
+└── p45/
+```
+
+- Folder name `p<N>` = pupil radius (simulation units).  Currently p10, p15, p20, p25, p30, p35, p40, p45.
+- Filename `D000` = 0.00 D, `Dm<N>` = −N/100 D (myopia), `Dp<N>` = +N/100 D (hyperopia).
+- `.ras` files coexist — **ignore them**; process `.png` only.
+- Image size: 1127 × 1152 px.
+
+### Crop settings (Simulation-specific)
+
+Standard patient crop (CROP_RATIO=0.2) does not work for Simulation images.  
+Simulation uses: **CROP_RATIO = 0.60, LEFT_SHIFT = 0.10** (keeps 60%, centre shifted 10% left).  
+`center_crop` in `preprocess_utils.py` accepts `left_shift` as an optional argument (default 0.0, backwards-compatible).
+
+### Ellipse fitting approach
+
+AdaptDoG auto-fitting failed on Simulation images (edges not visible enough).  
+Adopted workflow: **manual Labelme annotation → JSON → mask → `fit_ellipse_from_mask`**.
+
+```
+STEP 1  pipeline_simulation.py     RedEnhance + crop → roi/  (also tries AdaptDoG, keep overlays)
+STEP 2  Labelme (manual)           annotate roi/ images, label = "red_reflex"
+STEP 3  simulation_ellipse_from_json.py  JSON→mask→ellipse → per_image_label.csv + ellipse_label/
+STEP 4  simulation_p30_fit_full.py       fitting analysis (ratio / major / minor / area vs D)
+```
+
+### Run commands
+
+```bash
+# STEP 1: crop + AdaptDoG (preview)
+python -m src.pipeline.pipeline_simulation --run_name sim_run01
+
+# STEP 3: JSON → ellipse (per group, for incremental checking)
+python -m src.pipeline.simulation_ellipse_from_json --run_name sim_run01 --pupil_group p30
+python -m src.pipeline.simulation_ellipse_from_json --run_name sim_run01  # all groups
+
+# STEP 4: fitting analysis
+python experiments/simulation_p30_fit.py         # C⁰ logistic (ratio, both sides)
+python experiments/simulation_p30_fit_full.py    # ratio + major + minor + area
+python experiments/simulation_p30_fit_C2.py      # C² Hill (reference only, not adopted)
+```
+
+### Fitting results (p30, 2026-06-01)
+
+Annotated: 65 images (myopia 0D～−8D + hyperopia 0D～+8D).  
+Adopted model: **C⁰ Logistic anchored at D=0** (`f(0) = ratio_0 = 0.0204`).
+
+| Variable | Myopia R² | Hyperopia R² | Notes |
+|---|---|---|---|
+| ratio | 0.9962 | 0.9916 | Main variable; adopted |
+| minor | 0.9957 | 0.9953 | Good fit |
+| area (major×minor) | 0.9868 | 0.9895 | Good fit |
+| major | 0.3224 | 0.7663 | Poor — noisy, not reliable |
+
+Logistic formula (anchored):
+```
+f(|D|) = a / (1 + exp(-k·(|D| - x0))) + offset
+offset = ratio_0 - a / (1 + exp(k·x0))   ← derived, not free
+```
+
+Myopia:    a=1.0062, k=0.7814, x0=3.4325  
+Hyperopia: a=0.7336, k=0.5323, x0=3.5265  
+Both sides share `ratio_0 = 0.0204` (measured 0D value) → C⁰ continuous at D=0 (cusp).
+
+C² attempt (Hill equation, n>2) stored in `experiments/simulation_p30_fit_C2.py` for reference;  
+myopia side achieves C² (n=2.39) but hyperopia hits lower bound (n≈2, C¹ only) — not adopted.
+
+### Output files (per pupil group, sim_run01)
+
+```
+data/processed/simulation_runs/sim_run01/<pupil_group>/
+├── red/                   RedEnhance (full image)
+├── roi/                   60%-crop colour images + Labelme JSONs
+├── ellipse/               AdaptDoG overlay (auto, for reference)
+├── ellipse_label/         Labelme-based ellipse overlay
+├── per_image.csv          AdaptDoG results
+├── per_image_label.csv    Labelme-based: stem, major, minor, ratio, angle, mask_area
+├── ellipse_grid.png       AdaptDoG grid
+└── fitting/               (p30 only so far)
+    ├── ratio_both_sides.png
+    ├── ratio_myopia.png / ratio_hyperopia.png
+    ├── major/minor/area_both_sides.png
+    ├── fit_summary.csv       C⁰ logistic parameters
+    ├── fit_summary_full.csv  all variables
+    └── fit_summary_C2.csv    Hill C² (reference)
+```
 
 ---
 
