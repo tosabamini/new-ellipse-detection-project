@@ -4,6 +4,7 @@ import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.hardware.camera2.CameraCharacteristics
 import android.view.TextureView
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -72,6 +73,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     @Volatile private var captureMode = CaptureMode.NONE
     @Volatile private var pendingFocusDistance = 0f
     @Volatile private var pendingFocusTag = ""
+    // First photo of a focus-pair capture, retained for background 3D verdict analysis.
+    @Volatile private var focusPairFirstBytes: ByteArray? = null
+    @Volatile private var focusPairFirstOrient: Int = 0
 
     val cameraController = CameraController(application)
     private val photoFileManager = PhotoFileManager(application)
@@ -185,6 +189,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             override fun onCameraError(error: String) {
                 val wasInFocusPair = captureMode != CaptureMode.NONE
                 captureMode = CaptureMode.NONE
+                focusPairFirstBytes = null
                 _isCapturing.value = false
                 postMessage(error)
                 if (wasInFocusPair) cameraController.updateSettings(_settings.value)
@@ -200,22 +205,40 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     CaptureMode.FOCUS_PAIR_FIRST -> {
                         _session.update { it.copy(capturedFiles = it.capturedFiles + filename) }
                         postMessage("Saved: $filename")
+                        // Retain first photo for background analysis after the pair completes.
+                        focusPairFirstBytes = jpegBytes
+                        focusPairFirstOrient = jpegOrientationDeg
                         captureMode = CaptureMode.FOCUS_PAIR_SECOND
                         val s = _session.value
                         cameraController.updateSettings(
                             _settings.value.copy(focusDistance = pendingFocusDistance, afEnabled = false)
                         )
+                        // Focus-pair 2nd photo goes into a tag-suffixed eye folder
+                        // (e.g. RIGHT3D / LEFT10D).  Keeps it isolated from the
+                        // patient's normal-focus images so gallery/All-Analyze
+                        // can target each set independently.
+                        val secondEye = "${s.selectedEye}${pendingFocusTag}"
                         val (outputStream, filename2) = photoFileManager.createOutputStream(
-                            s.patientId, s.selectedEye, pendingFocusTag
+                            s.patientId, secondEye, pendingFocusTag
                         )
                         cameraController.captureStillImage(outputStream, filename2)
                     }
                     CaptureMode.FOCUS_PAIR_SECOND -> {
+                        val finishedTag = pendingFocusTag
                         captureMode = CaptureMode.NONE
                         _isCapturing.value = false
                         _session.update { it.copy(capturedFiles = it.capturedFiles + filename) }
                         postMessage("Saved: $filename")
                         cameraController.updateSettings(_settings.value)
+                        // Background 3D verdict: compare ratio & minor between the two photos.
+                        if (finishedTag == "3D") {
+                            val first = focusPairFirstBytes
+                            val firstOrient = focusPairFirstOrient
+                            if (first != null) {
+                                run3DVerdict(first, firstOrient, jpegBytes, jpegOrientationDeg)
+                            }
+                        }
+                        focusPairFirstBytes = null
                     }
                 }
             }
@@ -223,6 +246,7 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             override fun onCaptureError(error: String) {
                 val wasInFocusPair = captureMode != CaptureMode.NONE
                 captureMode = CaptureMode.NONE
+                focusPairFirstBytes = null
                 _isCapturing.value = false
                 postMessage(error)
                 if (wasInFocusPair) cameraController.updateSettings(_settings.value)
@@ -399,6 +423,17 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
         postMessage("Settings reset to defaults")
     }
 
+    /** Adjust ISO by `delta` and apply immediately, clamped to the sensor's supported range. */
+    fun bumpIso(delta: Int) {
+        val chars = cameraController.getCharacteristics()
+        val range = chars?.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
+        val lo = (range?.lower ?: 50).coerceAtLeast(1)
+        val hi = (range?.upper ?: 3200)
+        val current = _settings.value
+        val newIso = (current.iso + delta).coerceIn(lo, hi)
+        if (newIso != current.iso) updateSettings(current.copy(iso = newIso))
+    }
+
     // --- Capture ---
 
     fun captureImage() {
@@ -428,6 +463,59 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun captureFocusPair3D() = captureFocusPair(FOCUS_3D, "3D")
     fun captureFocusPair10D() = captureFocusPair(FOCUS_10D, "10D")
+
+    /**
+     * Background analysis run after the 3D focus pair completes.
+     *
+     * Compares ratio and minor axis between the normal-focus photo (1st) and the
+     * 3D-focus photo (2nd):
+     *   both grew      → Myopia
+     *   both shrank    → Hyperopia
+     *   one each way   → Uncertain
+     *
+     * Reported via the snackbar (postMessage).  No UI navigation; the camera
+     * preview keeps running.
+     */
+    private fun run3DVerdict(
+        bytes1: ByteArray, orient1: Int,
+        bytes2: ByteArray, orient2: Int
+    ) {
+        viewModelScope.launch(Dispatchers.Default) {
+            val bmp1 = decodeAndRotate(bytes1, orient1)
+            val bmp2 = decodeAndRotate(bytes2, orient2)
+            if (bmp1 == null || bmp2 == null) {
+                bmp1?.recycle(); bmp2?.recycle()
+                postMessage("3D analysis failed (decode)")
+                return@launch
+            }
+            val r1 = ellipseAnalyzer.analyze(bmp1)
+            val r2 = ellipseAnalyzer.analyze(bmp2)
+            bmp1.recycle(); bmp2.recycle()
+            if (r1 == null || r2 == null) {
+                postMessage("3D analysis failed (no ellipse)")
+                return@launch
+            }
+            val ratioGrew = r2.ratio  > r1.ratio
+            val minorGrew = r2.minorPx > r1.minorPx
+            val verdict = when {
+                 ratioGrew &&  minorGrew -> "Myopia"
+                !ratioGrew && !minorGrew -> "Hyperopia"
+                else                     -> "Uncertain"
+            }
+            postMessage(verdict)
+        }
+    }
+
+    private fun decodeAndRotate(bytes: ByteArray, orientDeg: Int): Bitmap? = try {
+        val opts = BitmapFactory.Options().apply { inSampleSize = 2 }
+        var bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return null
+        if (orientDeg != 0) {
+            val m = Matrix(); m.postRotate(orientDeg.toFloat())
+            val rotated = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+            bmp.recycle(); bmp = rotated
+        }
+        bmp
+    } catch (_: Exception) { null }
 
     // --- Session ---
 

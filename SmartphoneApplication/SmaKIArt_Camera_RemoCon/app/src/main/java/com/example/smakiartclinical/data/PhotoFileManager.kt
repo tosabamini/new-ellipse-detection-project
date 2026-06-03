@@ -94,7 +94,7 @@ class PhotoFileManager(private val context: Context) {
                 if (parts[0] != Environment.DIRECTORY_PICTURES || parts[1] != appFolder) continue
                 val patientId = parts[2]
                 val eye = parts[3]
-                if (eye != "RIGHT" && eye != "LEFT") continue
+                if (eye !in EyeFolders.all) continue
                 val id = c.getLong(idCol)
                 out += CapturedPhoto(
                     uri = ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id),
@@ -117,7 +117,7 @@ class PhotoFileManager(private val context: Context) {
         if (!root.exists()) return out
         root.listFiles()?.forEach { patientDir ->
             if (!patientDir.isDirectory) return@forEach
-            listOf("RIGHT", "LEFT").forEach { eye ->
+            EyeFolders.all.forEach { eye ->
                 val eyeDir = File(patientDir, eye)
                 if (!eyeDir.isDirectory) return@forEach
                 eyeDir.listFiles { f -> f.isFile && f.extension.equals("jpg", true) }?.forEach { f ->
@@ -139,10 +139,14 @@ class PhotoFileManager(private val context: Context) {
         val byPatient = photos.groupBy { it.patientId }
         return byPatient.map { (id, list) ->
             PatientSummary(
-                patientId = id,
+                patientId        = id,
                 latestCaptureSec = list.maxOf { it.dateAddedSec },
-                rightCount = list.count { it.eye == "RIGHT" },
-                leftCount = list.count { it.eye == "LEFT" }
+                rightCount       = list.count { it.eye == EyeFolders.RIGHT },
+                leftCount        = list.count { it.eye == EyeFolders.LEFT },
+                right3DCount     = list.count { it.eye == EyeFolders.RIGHT3D },
+                left3DCount      = list.count { it.eye == EyeFolders.LEFT3D },
+                right10DCount    = list.count { it.eye == EyeFolders.RIGHT10D },
+                left10DCount     = list.count { it.eye == EyeFolders.LEFT10D }
             )
         }.sortedByDescending { it.latestCaptureSec }
     }

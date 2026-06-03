@@ -63,6 +63,13 @@ import kotlin.math.max
 
 private val tsFmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
 
+// Shared theme colours (mirror CameraScreen)
+private val PrimaryPurple = Color(0xFF7B1FA2)
+private val EyeRightBlueLg = Color(0xFF1B3A5C)
+private val EyeLeftGreenLg = Color(0xFF1B5C2F)
+private val EyeRightBlueSm = Color(0xFF143046)
+private val EyeLeftGreenSm = Color(0xFF143A1F)
+
 @Composable
 fun GalleryOverlay(viewModel: CameraViewModel) {
     val view by viewModel.galleryView.collectAsState()
@@ -145,7 +152,21 @@ private fun PatientRow(p: PatientSummary, onClick: () -> Unit) {
                 fontSize = 11.sp
             )
         }
-        Text("R:${p.rightCount}  L:${p.leftCount}", color = Color(0xFF80FF80), fontSize = 13.sp)
+        Column(horizontalAlignment = Alignment.End) {
+            Text("R:${p.rightCount}  L:${p.leftCount}", color = Color(0xFF80FF80), fontSize = 13.sp)
+            if (p.right3DCount + p.left3DCount > 0) {
+                Text(
+                    "R3D:${p.right3DCount}  L3D:${p.left3DCount}",
+                    color = Color(0xFF80FF80).copy(alpha = 0.7f), fontSize = 10.sp
+                )
+            }
+            if (p.right10DCount + p.left10DCount > 0) {
+                Text(
+                    "R10D:${p.right10DCount}  L10D:${p.left10DCount}",
+                    color = Color(0xFF80FF80).copy(alpha = 0.7f), fontSize = 10.sp
+                )
+            }
+        }
         Spacer(Modifier.width(8.dp))
         Text("›", color = Color.White, fontSize = 22.sp)
     }
@@ -158,30 +179,63 @@ private fun EyeSelectorScreen(viewModel: CameraViewModel, patientId: String) {
     val patients by viewModel.patientSummaries.collectAsState()
     val p = patients.firstOrNull { it.patientId == patientId }
     Column(Modifier.fillMaxSize()) {
-        GalleryTopBar("$patientId", onBack = { viewModel.galleryBack() })
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(24.dp),
-            horizontalArrangement = Arrangement.spacedBy(24.dp),
-            verticalAlignment = Alignment.CenterVertically
+        GalleryTopBar(patientId, onBack = { viewModel.galleryBack() })
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            EyeCard("RIGHT", p?.rightCount ?: 0, Modifier.weight(1f).fillMaxHeight()) {
-                viewModel.galleryOpenEye(patientId, "RIGHT")
+            // Main RIGHT / LEFT — normal-focus folders
+            Row(
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                EyeCard("RIGHT", p?.rightCount ?: 0, isRight = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    viewModel.galleryOpenEye(patientId, "RIGHT")
+                }
+                EyeCard("LEFT",  p?.leftCount  ?: 0, isRight = false,
+                    modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    viewModel.galleryOpenEye(patientId, "LEFT")
+                }
             }
-            EyeCard("LEFT",  p?.leftCount  ?: 0, Modifier.weight(1f).fillMaxHeight()) {
-                viewModel.galleryOpenEye(patientId, "LEFT")
+            // 3D folders — smaller, secondary row
+            Row(
+                modifier = Modifier.fillMaxWidth().height(62.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                EyeCardSmall("RIGHT3D", p?.right3DCount ?: 0, isRight = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    viewModel.galleryOpenEye(patientId, "RIGHT3D")
+                }
+                EyeCardSmall("LEFT3D", p?.left3DCount ?: 0, isRight = false,
+                    modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    viewModel.galleryOpenEye(patientId, "LEFT3D")
+                }
+            }
+            // 10D folders — smaller, tertiary row
+            Row(
+                modifier = Modifier.fillMaxWidth().height(62.dp),
+                horizontalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                EyeCardSmall("RIGHT10D", p?.right10DCount ?: 0, isRight = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    viewModel.galleryOpenEye(patientId, "RIGHT10D")
+                }
+                EyeCardSmall("LEFT10D", p?.left10DCount ?: 0, isRight = false,
+                    modifier = Modifier.weight(1f).fillMaxHeight()) {
+                    viewModel.galleryOpenEye(patientId, "LEFT10D")
+                }
             }
         }
     }
 }
 
 @Composable
-private fun EyeCard(eye: String, count: Int, modifier: Modifier, onClick: () -> Unit) {
+private fun EyeCard(eye: String, count: Int, isRight: Boolean, modifier: Modifier, onClick: () -> Unit) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(16.dp))
-            .background(if (eye == "RIGHT") Color(0xFF1B3A5C) else Color(0xFF5C2A1B))
+            .background(if (isRight) EyeRightBlueLg else EyeLeftGreenLg)
             .clickable(enabled = count > 0) { onClick() }
             .border(2.dp, Color.White.copy(alpha = if (count > 0) 0.4f else 0.1f), RoundedCornerShape(16.dp)),
         contentAlignment = Alignment.Center
@@ -190,6 +244,23 @@ private fun EyeCard(eye: String, count: Int, modifier: Modifier, onClick: () -> 
             Text(eye, color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(6.dp))
             Text("$count images", color = Color.White.copy(alpha = 0.75f), fontSize = 14.sp)
+        }
+    }
+}
+
+@Composable
+private fun EyeCardSmall(eye: String, count: Int, isRight: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (isRight) EyeRightBlueSm else EyeLeftGreenSm)
+            .clickable(enabled = count > 0) { onClick() }
+            .border(1.dp, Color.White.copy(alpha = if (count > 0) 0.3f else 0.08f), RoundedCornerShape(10.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(eye, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text("($count)", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
         }
     }
 }
@@ -207,7 +278,7 @@ private fun ImageListScreen(viewModel: CameraViewModel, patientId: String, eye: 
             Button(
                 onClick = { viewModel.runAllAnalyze(patientId, eye) },
                 enabled = !running && photos.size >= SCAEstimator.MIN_VALID,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1B5E20))
+                colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
             ) {
                 if (running) {
                     CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)

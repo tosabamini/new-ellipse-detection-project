@@ -24,6 +24,7 @@ Thumbs.db
 data/raw/patient_data/
 data/processed/
 data/annotations/
+data/Repeatability/    # patient identifiable data — never upload
 
 # keep folder structure if needed
 !data/raw/.gitkeep

@@ -6,6 +6,7 @@ End-to-end red reflex analysis pipeline for ophthalmic images.
 Two parallel pipelines:
 - **ML-based** (legacy): RedEnhance → Classification → Segmentation → Ellipse fitting → Refraction estimation (S, C, A).
 - **Geometry-only v150526** (current): RedEnhance → AdaptDoG → IQR filter → Pupil estimation → D estimation → D-IQR → SCA fit. No neural networks; suitable for Android/iOS deployment.
+- **Simulation ratio pipeline** (`pipeline_sim_ratio`): v150526 と同一構成だが、D推定のみ Simulation ベース C⁰ Logistic モデル（`src/analysis/sim_ratio_model.py`）に差し替えたバージョン。暫定モデル。
 
 A secondary workflow generates reference ellipse data from a model eye at known refraction powers, used as calibration data for refraction estimation.
 
@@ -33,6 +34,8 @@ Key modules:
 - `src/analysis/build_patient_model.py` — model eye reference calibration; `estimate_D_from_ratio_and_p(ratio, p)` → (D1, D2)
 - `src/analysis/refraction_estimator.py` — refraction pipeline module; per-image D estimation + SCA trigonometric fit
 - `src/analysis/pupil_estimator.py` — **[v150526]** pupil diameter estimation from (ratio, area_scaled) via quadratic formula; `SCALE_FACTOR=1.3` (暫定)
+- `src/analysis/sim_ratio_model.py` — **[sim_ratio]** Simulation C⁰ Logistic による ratio→D 直接逆算（暫定、瞳孔径依存性無視）; `estimate_D_from_ratio_sim(ratio)` → (D_myopia, D_hyperopia)
+- `src/pipeline/pipeline_sim_ratio.py` — **[sim_ratio]** v150526 の Step5+6 のみ `sim_ratio_model` に差し替えたパイプライン; `--data_dir` で任意データルート指定可能
 - `experiments/otsu_ellipse_single.py` — **standalone** single-image classical ellipse tester; no `src.*` imports; edit `INPUT_IMAGE` at the top and run directly
 
 ---
@@ -139,6 +142,19 @@ red_enhance (R−0.5G−0.5B) → stretch_to_255 → DoG(σ=1.5, σ=15)
 
 ---
 
+## Data layout (追記)
+
+```
+data/
+├── Repeatability/            # 繰り返し測定データ (患者個人情報含む — git管理外)
+│   └── 0603/                 # 2026-06-03 撮影, 18名 × LEFT/RIGHT
+│       └── <name>/LEFT|RIGHT/*.jpg
+```
+
+**`data/Repeatability/` は `.gitignore` で除外済み。絶対にコミットしない。**
+
+---
+
 ## Run commands
 
 ```bash
@@ -180,6 +196,20 @@ python experiments/otsu_ellipse_single.py
 
 # Streamlit UI
 streamlit run src/ui/app.py
+
+# [sim_ratio] Simulation ratio モデルを使ったパイプライン (任意データルート指定可)
+python -m src.pipeline.pipeline_sim_ratio \
+    --patient_ids 101_LEFT 101_RIGHT \
+    --run_name sim_ratio_run01
+
+# [sim_ratio] Repeatability データへの適用例 (患者名フォルダ構造)
+python -m src.pipeline.pipeline_sim_ratio \
+    --patient_ids Name_LEFT Name_RIGHT \
+    --run_name repeatability_0603_sim_ratio \
+    --data_dir data/Repeatability/0603
+
+# [sim_ratio] 統一フィット曲線の再生成 (p20/p30/p40 平均)
+python experiments/simulation_unified_fit.py
 ```
 
 ---
@@ -242,6 +272,19 @@ is understood.
 Inverting the quadratic ratio formula yields two refraction solutions. Currently D2 (myopic
 side) is adopted unconditionally. The user is working on a separate resolution strategy —
 do not propose solutions.
+
+### 楕円フィッティングの限界 — 細線画像での major 過大算出 (2026-06-03 確認)
+
+Repeatability データ (data/Repeatability/0603/, 18名×2眼) に `pipeline_sim_ratio` を適用した結果、
+一部患者で S や C が過大に算出されることが判明。
+
+**原因:** 赤反射が極端に細い線状（minor が数 px 程度）の場合、AdaptDoG + `cv2.fitEllipse` が
+楕円の長軸・短軸を正しく認識できず、major を実際より大きく（または形状を誤って）算出する。
+→ ratio が不正確になり → D 推定・SCA フィットが崩れる。
+
+**再現条件:** 近正視付近など red reflex が非常に細い場合に顕在化しやすい。
+**対策 (未実施):** major/minor 絶対値の下限フィルタ、または細線検出後の別ルート処理を検討。
+現時点では「R² < 0.3 の結果は信頼性低」として扱うことで暫定的に判別可能。
 
 ### AdaptDoG thresholding variants (deferred — current variant adopted)
 Investigated 3 alternative thresholding strategies for AdaptDoG on 104_LEFT (38 images):
@@ -329,16 +372,20 @@ Update both Python and Kotlin together when recalibrating.
 
 ---
 
-## Next session roadmap (as of 2026-06-01)
+## Next session roadmap (as of 2026-06-03)
 
-1. **Simulation pipeline — extend to all pupil groups** — p30 (myopia + hyperopia) annotated and fitted. Next: annotate p10, p15, p20, p25, p35, p40, p45 with Labelme (`roi/` フォルダ、ラベル名 `red_reflex`) → run `simulation_ellipse_from_json` per group → run `simulation_p30_fit_full` variant per group → integrate across pupil groups to build a unified ratio–D model.
+1. **Simulation pipeline — extend to all pupil groups** — p20/p30/p40 annotated and fitted. Next: annotate p10, p15, p25, p35, p45 with Labelme (`roi/` フォルダ、ラベル名 `red_reflex`) → run `simulation_ellipse_from_json` per group → run `simulation_fit.py` per group → rebuild unified ratio–D model with all groups.
 
-2. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
+2. **楕円フィッティング精度改善** — 細線（minor 数px）ケースで major が過大算出される問題（2026-06-03 確認）。
+   対策候補: major/minor 絶対値下限フィルタ、細線専用の別処理ルート。
+   まず minor < X px のケースを除外するフィルタを `pipeline_sim_ratio` / `pipeline_v150526` に追加する。
+
+3. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
    Known issues: axis error (~40° offset for 104_LEFT) and C overestimation (~2×) may be partially explained by stale reference data.  When new constants are ready, update `src/analysis/*.py` **and** `analysis/EllipseConstants.kt` in the Android app.
 
-3. **More patient data** — run `pipeline_v150526` on additional patients; compare S/C/A outputs against ground-truth refraction records.
+4. **More patient data** — run `pipeline_v150526` / `pipeline_sim_ratio` on additional patients; compare S/C/A outputs against ground-truth refraction records.
 
-4. **Remove live-preview debug overlay** — the small `{bmpW}×{bmpH} angle=N°` text top-centre in `CameraScreen.kt:237` is left in place for verification.  Delete the `ellipseResult?.let { r -> Box(...) }` block when ready.
+5. **Remove live-preview debug overlay** — the small `{bmpW}×{bmpH} angle=N°` text top-centre in `CameraScreen.kt:237` is left in place for verification.  Delete the `ellipseResult?.let { r -> Box(...) }` block when ready.
 
 ---
 

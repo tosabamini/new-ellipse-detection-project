@@ -80,6 +80,18 @@ import kotlin.math.roundToInt
 
 private const val MAX_SLIDER_EXPOSURE_MS = 200f
 
+// ── Theme: primary action colour + eye-tinted panel background ───────────────
+private val PrimaryPurple = Color(0xFF7B1FA2)        // Material Purple 700
+private val GalleryRightBlue  = Color(0xFF1B3A5C)    // existing card colour
+private val GalleryLeftGreen  = Color(0xFF1B5C2F)    // green replacement for the left card
+
+/** Returns the eye-tinted translucent background for the side panels. */
+private fun panelBgFor(eye: String): Color = when (eye) {
+    "RIGHT" -> Color(0xFF0D47A1).copy(alpha = 0.55f)  // blue tint
+    "LEFT"  -> Color(0xFF1B5E20).copy(alpha = 0.55f)  // green tint
+    else    -> Color.Black.copy(alpha = 0.72f)
+}
+
 private enum class DPadDir { UP, DOWN, LEFT, RIGHT }
 
 // ── Main screen ───────────────────────────────────────────────────────────────
@@ -145,6 +157,8 @@ fun CameraScreen(viewModel: CameraViewModel) {
         // ── Layer 3: Overlay UI ───────────────────────────────────────────────
         Box(modifier = Modifier.fillMaxSize().safeDrawingPadding()) {
 
+            val panelBg = panelBgFor(session.selectedEye)
+
             // Left: Remote control panel — always visible
             RemotePanel(
                 modifier = Modifier
@@ -152,6 +166,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     .width(196.dp)
                     .fillMaxHeight()
                     .padding(bottom = 80.dp),
+                bgColor             = panelBg,
                 btState             = btState,
                 step                = dpadStep,
                 onStepChange        = { dpadStep = it },
@@ -169,6 +184,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .width(176.dp),
+                    bgColor           = panelBg,
                     patientId         = session.patientId,
                     onPatientIdChange = { viewModel.setPatientId(it) },
                     selectedEye       = session.selectedEye,
@@ -178,6 +194,18 @@ fun CameraScreen(viewModel: CameraViewModel) {
                     onFinishSession   = { viewModel.finishSession() },
                     onOpenGallery     = { viewModel.openGallery() },
                     onOpenSettings    = { showSettings = true }
+                )
+
+                // ISO quick-adjust column — just left of the session panel
+                IsoQuickPanel(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 180.dp, top = 4.dp)
+                        .width(60.dp),
+                    bgColor    = panelBg,
+                    isoValue   = settings.iso,
+                    onBumpUp   = { viewModel.bumpIso(+100) },
+                    onBumpDown = { viewModel.bumpIso(-100) }
                 )
             }
 
@@ -349,6 +377,7 @@ private fun EllipseCanvas(
 @Composable
 private fun RemotePanel(
     modifier: Modifier = Modifier,
+    bgColor: Color,
     btState: BtConnectionState,
     step: Int,
     onStepChange: (Int) -> Unit,
@@ -363,7 +392,7 @@ private fun RemotePanel(
 
     Column(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.72f))
+            .background(bgColor)
             .padding(horizontal = 10.dp, vertical = 8.dp)
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -395,7 +424,11 @@ private fun RemotePanel(
         // Connection actions (non-connected states)
         when (btState) {
             BtConnectionState.DISCONNECTED -> {
-                Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = onScan,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
+                ) {
                     Text("Search", fontSize = 12.sp)
                 }
             }
@@ -542,6 +575,7 @@ private fun SizeButton(label: String, onClick: () -> Unit) {
 @Composable
 private fun SessionPanel(
     modifier: Modifier = Modifier,
+    bgColor: Color,
     patientId: String,
     onPatientIdChange: (String) -> Unit,
     selectedEye: String,
@@ -554,7 +588,7 @@ private fun SessionPanel(
 ) {
     Column(
         modifier = modifier
-            .background(Color.Black.copy(alpha = 0.72f))
+            .background(bgColor)
             .padding(horizontal = 10.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
@@ -599,9 +633,7 @@ private fun SessionPanel(
         Button(
             onClick  = onToggleAnalysis,
             modifier = Modifier.fillMaxWidth(),
-            colors   = ButtonDefaults.buttonColors(
-                containerColor = if (isAnalysisRunning) Color(0xFFB71C1C) else Color(0xFF1B5E20)
-            )
+            colors   = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
         ) {
             Text(
                 text     = if (isAnalysisRunning) "■ Stop Analysis" else "▶ Start Analysis",
@@ -615,19 +647,63 @@ private fun SessionPanel(
                 onClick  = onOpenGallery,
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(horizontal = 4.dp),
-                colors   = ButtonDefaults.textButtonColors(contentColor = Color(0xFF80C8FF))
+                colors   = ButtonDefaults.textButtonColors(contentColor = PrimaryPurple)
             ) {
-                Text("Gallery", fontSize = 11.sp)
+                Text("Gallery", fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
             TextButton(
                 onClick  = onFinishSession,
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(horizontal = 4.dp),
-                colors   = ButtonDefaults.textButtonColors(contentColor = Color(0xFFFF6B6B))
+                colors   = ButtonDefaults.textButtonColors(contentColor = PrimaryPurple)
             ) {
-                Text("End", fontSize = 11.sp)
+                Text("End", fontSize = 11.sp, fontWeight = FontWeight.Bold)
             }
         }
+    }
+}
+
+// ── ISO quick-adjust column ───────────────────────────────────────────────────
+//
+// Sits just left of the SessionPanel.  Up / Down chevrons bump ISO ±100 with the
+// current value shown between them.  Lets the operator retune ISO mid-session
+// without opening the full settings drawer.
+
+@Composable
+private fun IsoQuickPanel(
+    modifier: Modifier = Modifier,
+    bgColor: Color,
+    isoValue: Int,
+    onBumpUp: () -> Unit,
+    onBumpDown: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .background(bgColor, RoundedCornerShape(8.dp))
+            .padding(vertical = 4.dp, horizontal = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        IsoBumpButton("▲", onClick = onBumpUp)
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("ISO", color = Color.White.copy(alpha = 0.65f), fontSize = 9.sp)
+            Text("$isoValue", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        }
+        IsoBumpButton("▼", onClick = onBumpDown)
+    }
+}
+
+@Composable
+private fun IsoBumpButton(label: String, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(width = 48.dp, height = 26.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(PrimaryPurple)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
     }
 }
 
