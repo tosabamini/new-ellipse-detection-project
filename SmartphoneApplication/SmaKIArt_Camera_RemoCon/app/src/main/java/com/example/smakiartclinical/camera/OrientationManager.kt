@@ -9,7 +9,8 @@ enum class DeviceOrientation { LANDSCAPE, REVERSE_LANDSCAPE, OTHER }
 
 class OrientationManager(
     context: Context,
-    private val onOrientationChanged: (DeviceOrientation) -> Unit
+    private val onOrientationChanged: (DeviceOrientation) -> Unit,
+    private val onRawAngle: ((Float) -> Unit)? = null
 ) {
     private var lastOrientation: DeviceOrientation = DeviceOrientation.OTHER
 
@@ -21,6 +22,7 @@ class OrientationManager(
     ) {
         override fun onOrientationChanged(angle: Int) {
             if (angle == ORIENTATION_UNKNOWN) return
+            onRawAngle?.invoke(angle.toFloat())
             val orientation = when (angle) {
                 in 225..315 -> DeviceOrientation.LANDSCAPE
                 in 45..135  -> DeviceOrientation.REVERSE_LANDSCAPE

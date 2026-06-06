@@ -74,6 +74,7 @@ import com.example.smakiartclinical.analysis.EllipseResult
 import com.example.smakiartclinical.data.model.CameraSettings
 import com.example.smakiartclinical.data.model.Preset
 import com.example.smakiartclinical.ui.components.CameraPreviewView
+import kotlin.math.abs
 import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.roundToInt
@@ -109,6 +110,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
     val isAnalysisRunning    by viewModel.isAnalysisRunning.collectAsState()
     val showAnalysisScreen   by viewModel.showAnalysisScreen.collectAsState()
     val currentOrientation   by viewModel.currentOrientation.collectAsState()
+    val tiltDeg              by viewModel.tiltDeg.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
     var dpadStep     by remember { mutableIntStateOf(10) }
@@ -267,20 +269,29 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 }
             }
 
-            // Debug: bitmap size + detected angle (remove when live-preview alignment is fixed)
-            ellipseResult?.let { r ->
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 4.dp)
-                        .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
-                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                ) {
-                    Text(
-                        "${r.bitmapW}×${r.bitmapH} angle=${r.angleDeg.toInt()}°",
-                        color    = Color.Cyan,
-                        fontSize = 10.sp
-                    )
+            // Level indicator — top center
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                LevelIndicator(tiltDeg = tiltDeg)
+
+                // Debug: bitmap size + detected angle (remove when live-preview alignment is fixed)
+                ellipseResult?.let { r ->
+                    Box(
+                        modifier = Modifier
+                            .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Text(
+                            "${r.bitmapW}×${r.bitmapH} angle=${r.angleDeg.toInt()}°",
+                            color    = Color.Cyan,
+                            fontSize = 10.sp
+                        )
+                    }
                 }
             }
 
@@ -309,6 +320,72 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 onDismiss = { viewModel.dismissAnalysisScreen() }
             )
         }
+    }
+}
+
+// ── Level indicator ───────────────────────────────────────────────────────────
+//
+// Draws two lines from a common center pivot:
+//   - A fixed horizontal reference line (always horizontal = target 90° orientation)
+//   - A moving line that rotates with the current device tilt
+// When tilt is within ±2°, both lines are green; otherwise the moving line is white.
+
+@Composable
+private fun LevelIndicator(tiltDeg: Float, modifier: Modifier = Modifier) {
+    val toleranceDeg = 2f
+    val isLevel      = abs(tiltDeg) <= toleranceDeg
+    val movingColor  = if (isLevel) Color(0xFF00E676) else Color.White
+    val refColor     = Color(0xFF00E676).copy(alpha = 0.40f)
+
+    Canvas(
+        modifier = modifier
+            .width(100.dp)
+            .height(40.dp)
+    ) {
+        val cx   = size.width  / 2f
+        val cy   = size.height / 2f
+        val arm  = size.width  / 2f * 0.88f   // line half-length
+        val sw   = 2.5.dp.toPx()
+
+        // fixed reference line — always horizontal
+        drawLine(
+            color       = refColor,
+            start       = Offset(cx - arm, cy),
+            end         = Offset(cx + arm, cy),
+            strokeWidth = sw,
+            cap         = StrokeCap.Round
+        )
+
+        // tolerance arc tick marks at ±2° on the reference line ends
+        val tickR  = arm * 0.92f
+        val tickH  = 6.dp.toPx()
+        for (sign in listOf(-1f, 1f)) {
+            val rad = Math.toRadians((sign * toleranceDeg).toDouble())
+            val tx  = cx + tickR * kotlin.math.sin(rad).toFloat()
+            val ty  = cy - tickR * (1 - kotlin.math.cos(rad)).toFloat()
+            drawLine(
+                color       = Color(0xFF00E676).copy(alpha = 0.55f),
+                start       = Offset(tx, ty - tickH / 2f),
+                end         = Offset(tx, ty + tickH / 2f),
+                strokeWidth = 1.5.dp.toPx(),
+                cap         = StrokeCap.Round
+            )
+        }
+
+        // moving line — rotated by tiltDeg around center
+        val rad   = Math.toRadians(tiltDeg.toDouble())
+        val cosA  = kotlin.math.cos(rad).toFloat()
+        val sinA  = kotlin.math.sin(rad).toFloat()
+        drawLine(
+            color       = movingColor,
+            start       = Offset(cx - arm * cosA, cy + arm * sinA),
+            end         = Offset(cx + arm * cosA, cy - arm * sinA),
+            strokeWidth = sw,
+            cap         = StrokeCap.Round
+        )
+
+        // center dot
+        drawCircle(color = movingColor, radius = 3.dp.toPx(), center = Offset(cx, cy))
     }
 }
 

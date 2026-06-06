@@ -101,7 +101,7 @@ def process_patient(patient_id: str, run_dir: Path,
                     exclude_prefixes: tuple = (),
                     data_dir: Path | None = None) -> dict | None:
     out = run_dir / patient_id
-    for sub in ("red", "roi", "ellipse"):
+    for sub in ("red", "roi", "red_roi", "ellipse"):
         (out / sub).mkdir(parents=True, exist_ok=True)
 
     # ── Step 1 & 2: RedEnhance + ROI crop ─────────────────────────────────────
@@ -130,6 +130,7 @@ def process_patient(patient_id: str, run_dir: Path,
 
         red_roi     = red_channel(roi_bgr)
         red_roi_str = stretch_to_255(red_roi)
+        cv2.imwrite(str(out / "red_roi" / f"{stem}_red_roi.png"), red_roi_str)
         e = run_adaptive_dog(red_roi_str)
 
         stems.append(stem)

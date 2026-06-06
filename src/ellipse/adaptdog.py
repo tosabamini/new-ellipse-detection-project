@@ -132,6 +132,9 @@ def run_adaptive_dog(red_str: np.ndarray) -> dict | None:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k))
         mask = cv2.morphologyEx(mask_core, cv2.MORPH_CLOSE, k)
 
+    # TODO: dilation/close ステップは新パイプラインでは廃止予定。
+    # 副作用（斜め方向への誤膨張・短軸の過大算出）が目的（tips補完）を上回るため。
+    # 新パイプラインでは mask_core を直接 fitEllipse に渡す。
     return _fit_ellipse_on_mask(mask)
 
 

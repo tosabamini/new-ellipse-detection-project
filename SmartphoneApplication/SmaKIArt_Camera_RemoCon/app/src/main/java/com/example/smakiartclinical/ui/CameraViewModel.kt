@@ -142,6 +142,9 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _currentOrientation = MutableStateFlow(DeviceOrientation.LANDSCAPE)
     val currentOrientation: StateFlow<DeviceOrientation> = _currentOrientation.asStateFlow()
 
+    private val _tiltDeg = MutableStateFlow(0f)
+    val tiltDeg: StateFlow<Float> = _tiltDeg.asStateFlow()
+
     val presets: StateFlow<List<Preset?>> = presetDataStore.presetsFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, List(PresetDataStore.MAX_PRESETS) { null })
 
@@ -529,6 +532,18 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // --- Orientation ---
+
+    fun onTiltAngle(rawAngle: Float) {
+        val target = when (_currentOrientation.value) {
+            DeviceOrientation.LANDSCAPE         -> 270f
+            DeviceOrientation.REVERSE_LANDSCAPE -> 90f
+            else                                -> return
+        }
+        var tilt = rawAngle - target
+        while (tilt >  180f) tilt -= 360f
+        while (tilt < -180f) tilt += 360f
+        _tiltDeg.value = tilt
+    }
 
     fun onOrientationChanged(orientation: DeviceOrientation) {
         if (orientation == DeviceOrientation.OTHER) return

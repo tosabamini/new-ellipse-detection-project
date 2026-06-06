@@ -47,9 +47,11 @@ class MainActivity : ComponentActivity() {
 
         OpenCVLoader.initLocal()
 
-        orientationManager = OrientationManager(this) { orientation ->
-            viewModel.onOrientationChanged(orientation)
-        }
+        orientationManager = OrientationManager(
+            context = this,
+            onOrientationChanged = { orientation -> viewModel.onOrientationChanged(orientation) },
+            onRawAngle = { angle -> viewModel.onTiltAngle(angle) }
+        )
 
         @Suppress("DEPRECATION")
         val rotation = windowManager.defaultDisplay.rotation
