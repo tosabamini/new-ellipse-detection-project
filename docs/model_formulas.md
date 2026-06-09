@@ -8,15 +8,24 @@
 
 ## Step 1 — 楕円パラメータの取得
 
-AdaptDoG（`src/ellipse/adaptdog.py`）で各画像から取得：
+前処理 → core fit（現行手法）で各画像から取得：
 
 ```
+center_crop (幅20%×高さ20%, preprocess_utils)
+  → red_channel (R−0.5G−0.5B) → stretch_to_255
+  → DoG(σ_s=1.5, σ_l=minor_est×0.75) → Otsu → pick_central_blob (mask_core)
+  → fitEllipse(mask_core)        ← dilation/close なし
+
 major  : 長軸 [px]
 minor  : 短軸 [px]
 angle  : 楕円の傾き [deg]
 ratio  = minor / major        （スケール不変）
 area   = major × minor        （実ピクセル面積）
 ```
+
+**注意**: 旧 `run_adaptive_dog` は mask_core を dilation/close した「final mask」で
+フィットするが、細線反射で major/minor を過大算出するため非採用。
+`pickup_mask_core_fit.py` / `sim_mask_core_fit.py` が現行 core fit の実装。
 
 ---
 

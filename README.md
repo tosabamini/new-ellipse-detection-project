@@ -589,16 +589,25 @@ Polynomial coefficients: `data/simu_masked/ellipse_flat75/fitting_calibrated_spl
 | `src/analysis/area_model.py` | `area_real(D, p_mm)` — polynomial with α·k |
 | `docs/model_formulas.md` | Full formula documentation |
 
+### Ellipse fitting — core fit (current method)
+
+Ellipse is fit **directly on `mask_core`** (DoG → Otsu → pick central blob → `fitEllipse`),
+with **no dilation/close** step. This matches `pickup_mask_core_fit.py` /
+`sim_mask_core_fit.py`. The older `run_adaptive_dog` dilation/close ("final mask") is
+deprecated — for thin reflexes it overestimates major/minor and corrupts the ratio.
+Preprocessing: `center_crop` (20 % width × 20 % height, from `preprocess_utils`)
+→ `red_channel` (R−0.5G−0.5B) → `stretch_to_255`.
+
 ### Repeatability study (2026-06-09)
 
 12 healthy adults × 2 eyes × 2 days (2026-06-03 and 2026-06-04).  
-All images processed with AdaptDoG → IQR filter → joint solver → D-IQR filter → SCA cosine fit.
+All images processed with core-fit ellipse → IQR filter → joint solver → D-IQR filter → SCA cosine fit.
 
 | Metric | MAE (day 1 vs day 2) |
 |---|---|
-| Spherical equivalent SE | **0.87 D** |
-| Sphere S | **0.93 D** |
-| Cylinder C | **0.83 D** |
+| Spherical equivalent SE | **0.49 D** |
+| Sphere S | **0.40 D** |
+| Cylinder C | **0.64 D** |
 
 Results: `data/Repeatability/sca_comparison_0603_0604.csv` (not tracked — patient data).
 

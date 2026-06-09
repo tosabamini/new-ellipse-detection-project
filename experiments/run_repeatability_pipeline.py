@@ -1,6 +1,11 @@
 """
 Repeatability データ (0603/0604) の全患者に対して
-AdaptDoG → IQR → poly10 joint solver → D-IQR → SCA を適用し CSV 出力。
+RedEnhance → center_crop → core-fit ellipse → IQR → poly10 joint solver
+→ D-IQR → SCA を適用し CSV 出力。
+
+楕円フィッティングは現行手法 (mask_core から直接 fitEllipse, dilation なし) を採用。
+pickup_mask_core_fit.py / sim_mask_core_fit.py と同一ロジック。
+前処理は src の正規関数を import (center_crop / red_channel / stretch_to_255)。
 
 Run:
   python experiments/run_repeatability_pipeline.py
@@ -17,8 +22,12 @@ from scipy.optimize import minimize, brentq
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.ellipse.adaptdog import run_adaptive_dog, iqr_filter, d_iqr_filter
-from src.preprocessing.preprocess_utils import process_red_by_mode
+from src.preprocessing.preprocess_utils import center_crop
+from src.ellipse.adaptdog import (
+    red_channel, stretch_to_255,
+    _otsu_mask, _pick_central_blob, _fit_ellipse_on_mask, _estimate_minor,
+    iqr_filter, d_iqr_filter,
+)
 from src.analysis.ratio_model import ratio_real
 from src.analysis.area_model import area_real
 from src.analysis.refraction_estimator import fit_sca
@@ -50,24 +59,16 @@ PAIRS_12 = [
 ]
 
 
-def red_enhance(img):
-    r = img[:, :, 2].astype(float)
-    g = img[:, :, 1].astype(float)
-    b = img[:, :, 0].astype(float)
-    red = r - 0.5 * g - 0.5 * b
-    mn, mx = red.min(), red.max()
-    if mx > mn:
-        red = (red - mn) / (mx - mn) * 255
-    return red.clip(0, 255).astype(np.uint8)
-
-
-def center_crop(img, crop_ratio=0.2):
-    h, w = img.shape[:2]
-    new_w = int(w * crop_ratio)
-    cx = w // 2
-    x0 = max(0, cx - new_w // 2)
-    x1 = x0 + new_w
-    return img[:, x0:x1]
+def core_fit(red_str):
+    """現行手法: mask_core から直接 fitEllipse (dilation/close なし)。
+    pickup_mask_core_fit.fit_from_red_roi と同一。"""
+    minor_est = _estimate_minor(red_str)
+    sigma_l   = max(8.0, minor_est * 0.75)
+    blur_s = cv2.GaussianBlur(red_str.astype(np.float32), (0, 0), 1.5)
+    blur_l = cv2.GaussianBlur(red_str.astype(np.float32), (0, 0), sigma_l)
+    dog    = stretch_to_255(np.clip(blur_s - blur_l, 0, None))
+    mask_core = _pick_central_blob(_otsu_mask(dog))
+    return _fit_ellipse_on_mask(mask_core)
 
 
 def _loss(x, ratio_obs, area_obs):
@@ -119,9 +120,9 @@ def process_eye(img_dir: Path):
         img = cv2.imread(str(p))
         if img is None:
             continue
-        roi = center_crop(img, CROP_RATIO)
-        red = red_enhance(roi)
-        e = run_adaptive_dog(red)
+        roi = center_crop(img, CROP_RATIO)            # 20% w × 20% h (preprocess_utils)
+        red_str = stretch_to_255(red_channel(roi))    # RedEnhance + stretch
+        e = core_fit(red_str)                         # 現行手法: core fit
         ellipses.append(e)
         stems.append(p.stem)
 
@@ -190,6 +191,24 @@ def run_date(date_str: str) -> dict:
     return results
 
 
+def _safe_write(path: Path, fields: list, rows: list) -> Path:
+    """CSV を書き込む。ロック中 (Excel 等) ならタイムスタンプ別名へ退避。"""
+    import time
+    targets = [path, path.with_name(f"{path.stem}_{time.strftime('%H%M%S')}{path.suffix}")]
+    for tgt in targets:
+        try:
+            with open(tgt, "w", newline="", encoding="utf-8-sig") as f:
+                w = csv.DictWriter(f, fieldnames=fields)
+                w.writeheader()
+                for r in rows:
+                    w.writerow({k: (f"{v:.3f}" if isinstance(v, float) else v)
+                                for k, v in r.items()})
+            return tgt
+        except PermissionError:
+            print(f"  [WARN] {tgt} がロック中 — 別名で保存します")
+    raise PermissionError(f"could not write {path}")
+
+
 def main():
     print("=== 0603 処理中 ===")
     r03 = run_date("0603")
@@ -210,13 +229,7 @@ def main():
                     })
 
     fields_all = ["date", "patient", "eye", "S", "C", "A", "SE", "R2"]
-    with open(OUT_CSV, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=fields_all)
-        w.writeheader()
-        for r in rows_all:
-            w.writerow({k: (f"{v:.3f}" if isinstance(v, float) else v)
-                        for k, v in r.items()})
-    print(f"\n保存: {OUT_CSV}  ({len(rows_all)} 行)")
+    print(f"\n保存: {_safe_write(OUT_CSV, fields_all, rows_all)}  ({len(rows_all)} 行)")
 
     # ── sca_comparison_0603_0604.csv ─────────────────────────────────────
     comp_rows = []
@@ -244,13 +257,7 @@ def main():
                    "SE_0603", "S_0603", "C_0603", "A_0603", "R2_0603",
                    "SE_0604", "S_0604", "C_0604", "A_0604", "R2_0604",
                    "dSE", "dS", "dC", "dA"]
-    with open(COMP_CSV, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.DictWriter(f, fieldnames=fields_comp)
-        w.writeheader()
-        for r in comp_rows:
-            w.writerow({k: (f"{v:.3f}" if isinstance(v, float) else v)
-                        for k, v in r.items()})
-    print(f"保存: {COMP_CSV}  ({len(comp_rows)} 行)")
+    print(f"保存: {_safe_write(COMP_CSV, fields_comp, comp_rows)}  ({len(comp_rows)} 行)")
 
     # ── 表示 ─────────────────────────────────────────────────────────────
     print(f"\n{'被験者/眼':<22} {'SE_03':>7} {'SE_04':>7} {'dSE':>6} | {'S_03':>6} {'S_04':>6} {'dS':>6} | {'C_03':>6} {'C_04':>6} {'dC':>6}")

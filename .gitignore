@@ -24,7 +24,10 @@ Thumbs.db
 data/raw/patient_data/
 data/processed/
 data/annotations/
-data/Repeatability/    # patient identifiable data — never upload
+# patient identifiable data — never upload (NO inline comments: gitignore treats them as part of the pattern)
+data/Repeatability/
+data/simulation/
+data/Simulation/
 
 # keep folder structure if needed
 !data/raw/.gitkeep

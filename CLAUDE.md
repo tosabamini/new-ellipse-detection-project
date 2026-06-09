@@ -389,14 +389,29 @@ Update both Python and Kotlin together when recalibrating.
 
 5. **Remove live-preview debug overlay** — `CameraScreen.kt:237` の `{bmpW}×{bmpH} angle=N°` テキストを検証完了後に削除。`ellipseResult?.let { r -> Box(...) }` ブロックを削除する。
 
-### 2026-06-09 実施内容（完了済み）
+### 2026-06-09〜10 実施内容（完了済み）
 
 - 光学シミュレーショングリッド（p10〜p45 × D −8〜+8）に対し 10次 2変数多項式をフィット（RMSE: ratio=0.0125, area=311px²）
 - `src/analysis/ratio_model.py` / `area_model.py` を線形補間から多項式に差し替え（α補正を area モデル内に統合）
 - `poly_model.npz` に係数保存（66項×ratio/area）
 - 繰り返し測定データ（0603/0604, 12名×両眼）に新モデルを適用し SCA 推定
-- 日差再現性: |ΔSE|=0.87D, |ΔS|=0.93D, |ΔC|=0.83D
 - 線形補間との差は軽微: |ΔSE|MAE=0.056D, |ΔC|MAE=0.134D（採用理由: 論文で数式として記述可能）
+
+### 2026-06-10 バグ修正（重要）
+
+`run_repeatability_pipeline.py` / `plot_cos_curves_all.py` に2件のバグを発見・修正:
+1. **center_crop が幅のみ切り出していた**（高さ全体を保持）→ 細い赤反射で虹彩縁等を誤検出。
+   正規の `preprocess_utils.center_crop`（幅20%×高さ20%）を import して解消。
+2. **楕円フィットに `run_adaptive_dog`（Final/dilated版）を使用**していた → 現行手法の
+   **core fit（mask_core から直接 fitEllipse, dilation なし）** に統一。
+   `pickup_mask_core_fit.py` / `sim_mask_core_fit.py` と同一ロジック。
+
+検証: 生jpg→自前処理 == PickUP保存PNG == ellipse_results.csv がバイト単位で一致。
+修正後の日差再現性: **|ΔSE|=0.49D, |ΔS|=0.40D, |ΔC|=0.64D**（バグ版 0.87/0.93/0.83 から改善）。
+Dilsha は正視（plano）に正常化。
+
+**教訓: 生画像処理スクリプトでは center_crop / red_channel / stretch / 楕円フィットを
+再実装せず必ず src からimportすること（CLAUDE.md「Shared-logic convention」遵守）。**
 
 ---
 
