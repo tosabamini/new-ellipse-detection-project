@@ -3,10 +3,10 @@
 ## What this project is
 
 End-to-end red reflex analysis pipeline for ophthalmic images.  
-Two parallel pipelines:
+Three parallel pipelines:
 - **ML-based** (legacy): RedEnhance → Classification → Segmentation → Ellipse fitting → Refraction estimation (S, C, A).
 - **Geometry-only v150526** (current): RedEnhance → AdaptDoG → IQR filter → Pupil estimation → D estimation → D-IQR → SCA fit. No neural networks; suitable for Android/iOS deployment.
-- **Simulation ratio pipeline** (`pipeline_sim_ratio`): v150526 と同一構成だが、D推定のみ Simulation ベース C⁰ Logistic モデル（`src/analysis/sim_ratio_model.py`）に差し替えたバージョン。暫定モデル。
+- **Joint solver (poly10, 2026-06-09, 採用)**: AdaptDoG → IQR → ratio+area 連立ソルバー（10次多項式モデル）→ D-IQR → SCA fit。`src/analysis/ratio_model.py` + `src/analysis/area_model.py` が多項式版に更新済み。
 
 A secondary workflow generates reference ellipse data from a model eye at known refraction powers, used as calibration data for refraction estimation.
 
@@ -35,6 +35,8 @@ Key modules:
 - `src/analysis/refraction_estimator.py` — refraction pipeline module; per-image D estimation + SCA trigonometric fit
 - `src/analysis/pupil_estimator.py` — **[v150526]** pupil diameter estimation from (ratio, area_scaled) via quadratic formula; `SCALE_FACTOR=1.3` (暫定)
 - `src/analysis/sim_ratio_model.py` — **[sim_ratio]** Simulation C⁰ Logistic による ratio→D 直接逆算（暫定、瞳孔径依存性無視）; `estimate_D_from_ratio_sim(ratio)` → (D_myopia, D_hyperopia)
+- `src/analysis/ratio_model.py` — **[poly10, 採用]** 10次多項式 `ratio_real(D, p_mm)`; poly_model.npz をロード
+- `src/analysis/area_model.py` — **[poly10, 採用]** 10次多項式 `area_real(D, p_mm)`; α(p)・k(p) 込み; poly_model.npz をロード
 - `src/pipeline/pipeline_sim_ratio.py` — **[sim_ratio]** v150526 の Step5+6 のみ `sim_ratio_model` に差し替えたパイプライン; `--data_dir` で任意データルート指定可能
 - `experiments/otsu_ellipse_single.py` — **standalone** single-image classical ellipse tester; no `src.*` imports; edit `INPUT_IMAGE` at the top and run directly
 
@@ -372,20 +374,29 @@ Update both Python and Kotlin together when recalibrating.
 
 ---
 
-## Next session roadmap (as of 2026-06-03)
+## Next session roadmap (as of 2026-06-10)
 
-1. **Simulation pipeline — extend to all pupil groups** — p20/p30/p40 annotated and fitted. Next: annotate p10, p15, p25, p35, p45 with Labelme (`roi/` フォルダ、ラベル名 `red_reflex`) → run `simulation_ellipse_from_json` per group → run `simulation_fit.py` per group → rebuild unified ratio–D model with all groups.
+1. **Simulation pipeline — extend to all pupil groups** — p20/p30/p40 annotated and fitted. Next: annotate p10, p15, p25, p35, p45 with Labelme → `simulation_ellipse_from_json` → `build_poly_models.py` で多項式を再フィット（全グループ統合）。
 
 2. **楕円フィッティング精度改善** — 細線（minor 数px）ケースで major が過大算出される問題（2026-06-03 確認）。
-   対策候補: major/minor 絶対値下限フィルタ、細線専用の別処理ルート。
-   まず minor < X px のケースを除外するフィルタを `pipeline_sim_ratio` / `pipeline_v150526` に追加する。
+   対策候補: minor 絶対値下限フィルタ。まず minor < X px のケースを除外するフィルタを `run_repeatability_pipeline.py` / `pipeline_v150526` に追加する。
 
-3. **Reference data retake** — recollect model eye images with consistent optics and re-derive SCALE_FACTOR and the pupil estimation coefficients.  
-   Known issues: axis error (~40° offset for 104_LEFT) and C overestimation (~2×) may be partially explained by stale reference data.  When new constants are ready, update `src/analysis/*.py` **and** `analysis/EllipseConstants.kt` in the Android app.
+3. **Reference data retake** — 模型眼を再撮影し k(p) および α(p) を再校正。  
+   α(p) は現在 Abhishek（p≈3mm）・Dilsha（p≈7mm）の 2点のみの暫定値。  
+   更新後は `src/analysis/*.py` と Android `analysis/EllipseConstants.kt` を同時に更新すること。
 
-4. **More patient data** — run `pipeline_v150526` / `pipeline_sim_ratio` on additional patients; compare S/C/A outputs against ground-truth refraction records.
+4. **More patient data** — さらなる患者データで `run_repeatability_pipeline.py` を実行し、屈折検査値と比較。
 
-5. **Remove live-preview debug overlay** — the small `{bmpW}×{bmpH} angle=N°` text top-centre in `CameraScreen.kt:237` is left in place for verification.  Delete the `ellipseResult?.let { r -> Box(...) }` block when ready.
+5. **Remove live-preview debug overlay** — `CameraScreen.kt:237` の `{bmpW}×{bmpH} angle=N°` テキストを検証完了後に削除。`ellipseResult?.let { r -> Box(...) }` ブロックを削除する。
+
+### 2026-06-09 実施内容（完了済み）
+
+- 光学シミュレーショングリッド（p10〜p45 × D −8〜+8）に対し 10次 2変数多項式をフィット（RMSE: ratio=0.0125, area=311px²）
+- `src/analysis/ratio_model.py` / `area_model.py` を線形補間から多項式に差し替え（α補正を area モデル内に統合）
+- `poly_model.npz` に係数保存（66項×ratio/area）
+- 繰り返し測定データ（0603/0604, 12名×両眼）に新モデルを適用し SCA 推定
+- 日差再現性: |ΔSE|=0.87D, |ΔS|=0.93D, |ΔC|=0.83D
+- 線形補間との差は軽微: |ΔSE|MAE=0.056D, |ΔC|MAE=0.134D（採用理由: 論文で数式として記述可能）
 
 ---
 

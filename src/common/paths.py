@@ -52,3 +52,11 @@ METRICS_DIR = REPORTS_DIR / "metrics"
 NOTES_DIR = REPORTS_DIR / "notes"
 
 EXPERIMENTS_DIR = PROJECT_ROOT / "experiments"
+
+# =========================
+# Calibrated reference models (Simulation -> real px)
+# =========================
+SIMU_MASKED_DIR = DATA_DIR / "simu_masked" / "ellipse_flat75"
+AREA_MODEL_NPZ  = SIMU_MASKED_DIR / "fitting_calibrated_spline" / "area_model.npz"
+RATIO_MODEL_NPZ = SIMU_MASKED_DIR / "fitting_calibrated_spline" / "ratio_model.npz"
+POLY_MODEL_NPZ  = SIMU_MASKED_DIR / "fitting_calibrated_spline" / "poly_model.npz"

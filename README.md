@@ -544,16 +544,116 @@ Both curves meet at D=0 (C⁰ cusp); the asymmetry (myopia saturates at ~0.97, h
 
 ---
 
-## Next Session Roadmap (as of 2026-06-01)
+## Joint Solver Pipeline (2026-06-09, current)
 
-1. **Simulation — extend to all pupil groups** — annotate p10, p15, p20, p25, p35, p40, p45 with Labelme → run `simulation_ellipse_from_json` → fit and integrate across pupil groups.
+The current estimation approach uses a **joint (D, p) solver** that simultaneously fits refraction power and pupil diameter from ellipse ratio and area.
 
-2. **Reference data retake** — recollect model eye images to recalibrate SCALE_FACTOR and the (ratio, area) → pupil model.  
-   Current SF = 1.3 is provisional; axis error (~40° off) and C overestimation (~2×) may be partly explained by stale reference data.  When new constants are ready, update `src/analysis/*.py` **and** Android `analysis/EllipseConstants.kt` together.
+### Physical model
 
-3. **More patient data** — run pipeline_v150526 on additional patients and compare estimated S/C/A to ground-truth refraction records.
+```
+Ellipse (major, minor, angle)
+    → ratio = minor / major          (scale-invariant)
+    → area  = major × minor          (pixel area)
 
-4. **Android polishing** — remove the live-preview debug overlay (`CameraScreen.kt:237`) once accuracy is verified in the field.
+Joint minimisation:
+  L(D, p) = [(ratio_real(D,p) − ratio_obs) / ratio_obs]²
+           + [(area_real(D,p)  − area_obs)  / area_obs ]²
+
+ratio_real(D, p_mm) = Σ_{i+j≤10} c_ij D^i p^j          [10th-degree 2D polynomial]
+area_real(D, p_mm)  = Σ_{i+j≤10} c_ij D^i p^j          [polynomial, α(p)·k(p) baked in]
+
+α(p) = 0.2742 + 0.0419 × p   (patient-data correction, calibrated on 2 subjects)
+k(p) = 0.015732·p² − 0.098734·p + 0.602635   (model-eye pixel-scale correction)
+```
+
+| Model | RMSE | R² |
+|---|---|---|
+| ratio polynomial | 0.0125 | 0.998 |
+| area polynomial | 311 px² | 0.999 |
+
+Special case: `ratio < 0.13` → fix D=0, estimate p from area only (`status = "unmeasurable"`).
+
+Solver: coarse 65×29 grid → L-BFGS-B, `D ∈ [−8, 0] D`, `p ∈ [2, 9] mm`.
+
+Polynomial coefficients: `data/simu_masked/ellipse_flat75/fitting_calibrated_spline/poly_model.npz`
+
+### Key scripts
+
+| Script | Role |
+|---|---|
+| `experiments/build_poly_models.py` | Fit 10th-degree polynomials and save NPZ |
+| `experiments/refraction_from_ratio_area.py` | Joint solver for a single eye folder |
+| `experiments/run_repeatability_pipeline.py` | Full pipeline on 0603/0604 Repeatability data |
+| `experiments/rerun_pickup_solver.py` | Re-run solver on PickUP curated subset |
+| `src/analysis/ratio_model.py` | `ratio_real(D, p_mm)` — polynomial |
+| `src/analysis/area_model.py` | `area_real(D, p_mm)` — polynomial with α·k |
+| `docs/model_formulas.md` | Full formula documentation |
+
+### Repeatability study (2026-06-09)
+
+12 healthy adults × 2 eyes × 2 days (2026-06-03 and 2026-06-04).  
+All images processed with AdaptDoG → IQR filter → joint solver → D-IQR filter → SCA cosine fit.
+
+| Metric | MAE (day 1 vs day 2) |
+|---|---|
+| Spherical equivalent SE | **0.87 D** |
+| Sphere S | **0.93 D** |
+| Cylinder C | **0.83 D** |
+
+Results: `data/Repeatability/sca_comparison_0603_0604.csv` (not tracked — patient data).
+
+---
+
+## Simulation Data Pipeline
+
+Optical simulation images (`data/Simulation/`) provide ground-truth ellipses at known refraction powers for building ratio–D fitting models independent of physical model eye measurements.
+
+### Data layout
+
+```
+data/Simulation/
+├── p10/  camera_p10_D000.png  camera_p10_Dm25.png ... camera_p10_Dp800.png
+├── p15/  ...
+└── p45/
+```
+
+`p<N>` = pupil radius; `D000` = 0.00 D, `Dm<N>` = −N/100 D, `Dp<N>` = +N/100 D. Ignore `.ras` files.
+
+### Crop settings
+
+Simulation images require a different crop from patient data:  
+**60% keep, centre shifted 10% left** (`CROP_RATIO=0.60, LEFT_SHIFT=0.10`).
+
+### Workflow
+
+```bash
+# STEP 1: generate roi/ crops
+python -m src.pipeline.pipeline_simulation --run_name sim_run01
+
+# STEP 2: annotate roi/ in Labelme (label = "red_reflex"), then:
+# STEP 3: JSON → ellipse fitting per pupil group
+python -m src.pipeline.simulation_ellipse_from_json --run_name sim_run01 --pupil_group p30
+
+# STEP 4: fit and build polynomial model
+python experiments/build_poly_models.py
+```
+
+### Fitting model (p30 reference, 2026-06-01)
+
+C⁰ Logistic anchored at D=0 (myopia R²=0.996, hyperopia R²=0.992).  
+**Status:** p30 annotated and used for polynomial model seed. Other groups pending.
+
+---
+
+## Next Session Roadmap (as of 2026-06-10)
+
+1. **Simulation — extend to all pupil groups** — annotate p10, p15, p20, p25, p35, p40, p45 → refit polynomial across all groups for better p-dependence.
+
+2. **Reference data retake** — recollect model eye images to recalibrate k(p) and α(p). Current α is from a 2-point calibration (p≈3mm, p≈7mm) and is provisional.
+
+3. **Ellipse fitting for thin reflexes** — minor < ~5 px causes major overestimation. Add minimum minor/major absolute value filter.
+
+4. **Android polishing** — remove live-preview debug overlay (`CameraScreen.kt:237`). Sync `EllipseConstants.kt` when model is recalibrated.
 
 ---
 
