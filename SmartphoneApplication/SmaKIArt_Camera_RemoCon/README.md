@@ -33,6 +33,7 @@ Provides a full-screen Camera2 fundus camera with manual parameter control, and 
 | Balloon size | Resize balloon with − / + buttons (±15 dp per tap) |
 | Preset buttons | ①②③④ — send `PRESET:N` to apply stored position/size preset |
 | Start / Stop REC | Green/red circle button; sends `VIDEO_START:patientId:eye` or `VIDEO_STOP` |
+| Fog (雲霧) | ☁ button (left of the 3D shutter); sends `FOG` to blur the stimulus panel |
 | Disconnect | One-tap disconnect when connected |
 
 ---
@@ -52,13 +53,13 @@ Provides a full-screen Camera2 fundus camera with manual parameter control, and 
 │   Size: [−][+]                                               │
 │   Preset: ①②③④                                             │
 │                                                              │
-│            [●REC]  [3D]  [⬤ shutter]  [10D]               │
+│         [●REC]  [☁]  [3D]  [⬤ shutter]  [10D]            │
 └──────────────────────────────────────────────────────────────┘
 ```
 
 - **RemotePanel** (left, always visible): BLE connection + balloon control + presets
 - **SessionPanel** (right): Patient ID, eye selection, settings icon
-- **BottomShutterBar**: REC button (left) + 3D / main shutter / 10D (center-right, +10dp offset)
+- **BottomShutterBar**: REC button (left) + ☁ Fog + 3D / main shutter / 10D (center-right, +10dp offset)
 
 ---
 

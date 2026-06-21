@@ -306,7 +306,8 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 onCapture3D       = { viewModel.captureFocusPair3D() },
                 onCapture10D      = { viewModel.captureFocusPair10D() },
                 onVideoStart      = { viewModel.sendVideoStart() },
-                onVideoStop       = { viewModel.sendVideoStop() }
+                onVideoStop       = { viewModel.sendVideoStop() },
+                onFog             = { viewModel.sendFog() }
             )
         }
 
@@ -825,7 +826,8 @@ private fun BottomShutterBar(
     onCapture3D: () -> Unit,
     onCapture10D: () -> Unit,
     onVideoStart: () -> Unit,
-    onVideoStop: () -> Unit
+    onVideoStop: () -> Unit,
+    onFog: () -> Unit
 ) {
     Row(
         modifier = modifier
@@ -841,6 +843,11 @@ private fun BottomShutterBar(
         )
 
         Spacer(Modifier.width(28.dp))
+
+        // 雲霧（フォグ）— Screen_FrontCamera 側の刺激パネルをぼかす BLE コマンド。
+        // 撮影系ボタンではないので isCapturing でも無効化しない。
+        FogButton(onClick = onFog)
+        Spacer(Modifier.width(16.dp))
 
         // 3D / メインシャッター / 10D
         FocusShutterButton(label = "3D",  isCapturing = isCapturing, onClick = onCapture3D)
@@ -871,6 +878,23 @@ private fun RecButton(isRecording: Boolean, onClick: () -> Unit) {
             color    = Color.White,
             fontSize = 20.sp
         )
+    }
+}
+
+// ── 雲霧（フォグ）ボタン — インディゴ円形。撮影ボタンと区別するため塗りつぶし ──
+
+@Composable
+private fun FogButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .clip(CircleShape)
+            .background(Color(0xFF5C6BC0))
+            .border(2.dp, Color.White.copy(alpha = 0.55f), CircleShape)
+            .clickable { onClick() },
+        contentAlignment = Alignment.Center
+    ) {
+        Text("☁", color = Color.White, fontSize = 22.sp)
     }
 }
 

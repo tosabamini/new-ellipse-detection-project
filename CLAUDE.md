@@ -314,9 +314,11 @@ Mirrors `pipeline_v150526` directly on-device.
 
 | Path | Role |
 |---|---|
-| `analysis/EllipseAnalyzer.kt`    | AdaptDoG → ratio → p → D₂ per image (OpenCV for Android) |
+| `analysis/EllipseAnalyzer.kt`    | **[poly10]** crop → red → core fit (no dilation) → ratio + area_norm → D per image (OpenCV for Android) |
+| `analysis/RefractionModel.kt`    | **[poly10]** joint solver: poly eval `ratio_real`/`area_real` + coarse grid + bounded Nelder–Mead (port of `refraction_from_ratio_area.py`; matches scipy L-BFGS-B to <1e-5 D) |
+| `analysis/RefractionFilters.kt`  | **[poly10]** pre-SCA outlier filters: major-axis IQR (k=0.5) + per-angle-bin D-IQR (k=1.5) (port of `iqr_filter`/`d_iqr_filter`) |
 | `analysis/SCAEstimator.kt`       | Cosine fit `D=P₀+P₁cos2α+P₂sin2α` → S/C/A (port of `pipeline_v150526`) |
-| `analysis/EllipseConstants.kt`   | Calibration constants (S0/S1/S2, I0/I1/I2, A/B/C, P_MIN/P_MAX, SCALE_FACTOR, CROP_RATIO) |
+| `analysis/EllipseConstants.kt`   | **[poly10]** Calibration constants: COEF_RATIO/COEF_AREA (66-term deg-10 polynomials), DEG, D/P bounds, RATIO_THRESH, REF_LONG_SIDE, IQR_K, D_IQR_K, CROP_RATIO |
 | `camera/CameraController.kt`     | Camera2 + manual ISO/exposure/focus + display transform |
 | `data/PhotoFileManager.kt`       | Save to MediaStore + enumerate gallery + EXIF-aware load |
 | `data/CapturedPhoto.kt`          | `CapturedPhoto`, `PatientSummary` |
@@ -366,11 +368,21 @@ screenAngle = angleDeg - 90f   // (+90° for REVERSE_LANDSCAPE)
 - All Analyze: loads every JPEG, runs `EllipseAnalyzer`, accumulates `(αᵢ, Dᵢ)`,
   fits via `SCAEstimator` (min 3 valid samples), shows S/C/A/SE/R²/n + cos-curve.
 
-### Calibration constants
+### Calibration constants (poly10, 2026-06-10 採用)
 
-Centralised in `analysis/EllipseConstants.kt` — same values as
-`src/analysis/pupil_estimator.py` and `src/analysis/build_patient_model.py`.
-Update both Python and Kotlin together when recalibrating.
+Centralised in `analysis/EllipseConstants.kt` — `COEF_RATIO` / `COEF_AREA` are the
+66-term degree-10 polynomials from `poly_model.npz` (same source as `src/analysis/ratio_model.py`
+/ `area_model.py`). Regenerate **both Python and Kotlin together** when recalibrating
+(see `docs/model_formulas.md` 付録 for the canonical coefficient list).
+
+**Area normalization (important):** `area_real` is calibrated on 4000px-long-side patient
+images. `EllipseAnalyzer` normalises observed area by `(REF_LONG_SIDE / max(bmpW,bmpH))²`
+so any capture/preview resolution maps onto the calibration scale. The authoritative
+measurement is gallery "All Analyze" on full-res JPEGs; live-preview D is approximate
+(preview aspect ratio differs from the 4:3 sensor).
+
+**Unmeasurable handling:** `ratio < RATIO_THRESH (0.13)` → D=0 (near emmetropia), and these
+samples are **kept** in the SCA fit (dEst=0, not null). dEst is null only on solver failure.
 
 ---
 

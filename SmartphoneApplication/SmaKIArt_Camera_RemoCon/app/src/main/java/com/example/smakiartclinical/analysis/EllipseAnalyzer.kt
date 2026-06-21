@@ -1,25 +1,8 @@
 package com.example.smakiartclinical.analysis
 
 import android.graphics.Bitmap
-import com.example.smakiartclinical.analysis.EllipseConstants.A0
-import com.example.smakiartclinical.analysis.EllipseConstants.A1
-import com.example.smakiartclinical.analysis.EllipseConstants.A2
-import com.example.smakiartclinical.analysis.EllipseConstants.B0
-import com.example.smakiartclinical.analysis.EllipseConstants.B1
-import com.example.smakiartclinical.analysis.EllipseConstants.B2
-import com.example.smakiartclinical.analysis.EllipseConstants.C0
-import com.example.smakiartclinical.analysis.EllipseConstants.C1
-import com.example.smakiartclinical.analysis.EllipseConstants.C2
 import com.example.smakiartclinical.analysis.EllipseConstants.CROP_RATIO
-import com.example.smakiartclinical.analysis.EllipseConstants.I0
-import com.example.smakiartclinical.analysis.EllipseConstants.I1
-import com.example.smakiartclinical.analysis.EllipseConstants.I2
-import com.example.smakiartclinical.analysis.EllipseConstants.P_MAX
-import com.example.smakiartclinical.analysis.EllipseConstants.P_MIN
-import com.example.smakiartclinical.analysis.EllipseConstants.S0
-import com.example.smakiartclinical.analysis.EllipseConstants.S1
-import com.example.smakiartclinical.analysis.EllipseConstants.S2
-import com.example.smakiartclinical.analysis.EllipseConstants.SCALE_FACTOR
+import com.example.smakiartclinical.analysis.EllipseConstants.REF_LONG_SIDE
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
@@ -30,7 +13,7 @@ import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-import kotlin.math.sqrt
+import kotlin.math.max
 
 data class EllipseResult(
     val cxPx: Float,      // ellipse center x in full-bitmap pixel space
@@ -39,13 +22,20 @@ data class EllipseResult(
     val minorPx: Float,   // minor axis length in pixels
     val angleDeg: Float,  // major-axis angle in degrees [0, 180)
     val ratio: Float,     // minor / major
-    val dEst: Float?,     // estimated refraction D [diopters] (D2, myopic side), or null
+    val dEst: Float?,     // estimated refraction D [diopters] (≤0; 0 = unmeasurable/emmetropia), null = solver failed
+    val pEstMm: Float?,   // estimated pupil diameter [mm], or null
     val bitmapW: Int,     // bitmap width used for this analysis (for coordinate mapping)
     val bitmapH: Int      // bitmap height used for this analysis
 )
 
 /**
- * Port of pipeline_v150526 AdaptDoG → pupil → D estimation to Android/OpenCV.
+ * Port of the poly10 joint-solver pipeline (run_repeatability_pipeline / refraction_from_ratio_area)
+ * to Android/OpenCV.
+ *
+ *   center_crop(0.2) → red_channel → stretch_to_255
+ *     → core fit (DoG → Otsu → central blob → fitEllipse, **no dilation/close**)
+ *     → RefractionModel.solveOne(ratio, area_norm) → D
+ *
  * Thread-safe: stateless; all intermediate Mats are local.
  */
 class EllipseAnalyzer {
@@ -80,21 +70,29 @@ class EllipseAnalyzer {
         val redStr = stretchTo255(red)
         red.release()
 
-        // 5. AdaptDoG ellipse fitting
-        val eRaw = runAdaptiveDog(redStr) ?: run { redStr.release(); return null }
+        // 5. Core ellipse fit (DoG → Otsu → central blob → fitEllipse, no dilation/close)
+        val eRaw = fitCore(redStr) ?: run { redStr.release(); return null }
         redStr.release()
 
         // 6. Map ROI coords → full-bitmap coords
         val cxFull = (roiX + eRaw.cx).toFloat()
         val cyFull = (roiY + eRaw.cy).toFloat()
 
-        // 7. Pupil estimation
-        val ratio       = eRaw.minor / eRaw.major
-        val areaScaled  = eRaw.major * eRaw.minor * SCALE_FACTOR * SCALE_FACTOR
-        val pEst        = estimatePupil(ratio, areaScaled)
+        // 7. ratio (scale-invariant) and area normalised to the 4000px-long-side
+        //    calibration scale.  major/minor are in this bitmap's px; the area
+        //    polynomial was fit on 4000px-wide patient images.
+        val ratio    = eRaw.minor / eRaw.major
+        val areaPx   = eRaw.major.toDouble() * eRaw.minor.toDouble()
+        val scale    = REF_LONG_SIDE / max(bmpW, bmpH).toDouble()
+        val areaNorm = areaPx * scale * scale
 
-        // 8. D estimation (D2 = myopic side)
-        val dEst = pEst?.let { estimateD2(ratio, it) }
+        // 8. poly10 joint solver → D (D≤0; 0 = unmeasurable near emmetropia)
+        val sol = RefractionModel.solveOne(ratio.toDouble(), areaNorm)
+        val dEst: Float? = when (sol.status) {
+            RefractionModel.Status.FAILED -> null
+            else -> sol.d.toFloat()
+        }
+        val pEst: Float? = if (sol.p.isNaN()) null else sol.p.toFloat()
 
         EllipseResult(
             cxPx      = cxFull,
@@ -104,6 +102,7 @@ class EllipseAnalyzer {
             angleDeg  = eRaw.angle,
             ratio     = ratio,
             dEst      = dEst,
+            pEstMm    = pEst,
             bitmapW   = bmpW,
             bitmapH   = bmpH
         )
@@ -154,7 +153,13 @@ class EllipseAnalyzer {
     private data class EllipseRaw(val cx: Float, val cy: Float,
                                    val major: Float, val minor: Float, val angle: Float)
 
-    private fun runAdaptiveDog(redStr: Mat): EllipseRaw? {
+    /**
+     * Current method: fit the ellipse directly on `mask_core` — **no dilation/close**.
+     * Mirrors `core_fit()` in run_repeatability_pipeline.py / pickup_mask_core_fit.py.
+     * The legacy `run_adaptive_dog` (Final/dilated mask) over-estimated major/minor on
+     * thin reflexes and is deprecated.
+     */
+    private fun fitCore(redStr: Mat): EllipseRaw? {
         val minorEst = estimateMinor(redStr)
         val sigmaL   = maxOf(8.0, minorEst * 0.75)
 
@@ -174,7 +179,7 @@ class EllipseAnalyzer {
         val dogStr = stretchTo255(dogClipped)
         dogClipped.release()
 
-        // Otsu → central blob
+        // Otsu → central blob → fit directly (mask_core)
         val maskRaw = Mat()
         Imgproc.threshold(dogStr, maskRaw, 0.0, 255.0,
             Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
@@ -183,27 +188,8 @@ class EllipseAnalyzer {
         val maskCore = pickCentralBlob(maskRaw)
         maskRaw.release()
 
-        val eCore      = fitEllipseOnMask(maskCore)
-        val coreRatio  = eCore?.let { it.minor / it.major } ?: 0f
-        val coreAngle  = eCore?.angle ?: 90f
-
-        val mask: Mat
-        if (coreRatio < 0.20f) {
-            var dilW = maxOf(3, (minorEst * 0.33f).toInt())
-            var dilH = maxOf(15, (minorEst * 1.20f).toInt())
-            if (coreAngle < 45f || coreAngle > 135f) { val tmp = dilW; dilW = dilH; dilH = tmp }
-            val k = Imgproc.getStructuringElement(
-                Imgproc.MORPH_RECT, Size(dilW.toDouble(), dilH.toDouble()))
-            mask = Mat(); Imgproc.dilate(maskCore, mask, k); k.release()
-        } else {
-            val ck = (maxOf(5, (minorEst * 0.20f).toInt()) or 1).toDouble()
-            val k  = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(ck, ck))
-            mask   = Mat(); Imgproc.morphologyEx(maskCore, mask, Imgproc.MORPH_CLOSE, k); k.release()
-        }
+        val result = fitEllipseOnMask(maskCore)
         maskCore.release()
-
-        val result = fitEllipseOnMask(mask)
-        mask.release()
         return result
     }
 
@@ -307,30 +293,5 @@ class EllipseAnalyzer {
         vals.sort()
         val pIdx = ((pct / 100.0) * (n - 1)).toInt().coerceIn(0, n - 1)
         return vals[pIdx].toDouble()
-    }
-
-    // ── Refraction estimation ─────────────────────────────────────────────────
-
-    private fun estimatePupil(ratio: Float, areaScaled: Float): Float? {
-        val aC   = S2 * ratio + I2
-        val bC   = S1 * ratio + I1
-        val cC   = S0 * ratio + I0 - areaScaled
-        val disc = bC * bC - 4f * aC * cC
-        if (disc < 0f) return null
-        val sq   = sqrt(disc)
-        val r1   = (-bC + sq) / (2f * aC)
-        val r2   = (-bC - sq) / (2f * aC)
-        val valid = listOf(r1, r2).filter { it in P_MIN..P_MAX }
-        return if (valid.isEmpty()) null else valid.max()
-    }
-
-    private fun estimateD2(ratio: Float, p: Float): Float? {
-        val ap   = A2 * p * p + A1 * p + A0
-        val bp   = B2 * p * p + B1 * p + B0
-        val cp   = C2 * p * p + C1 * p + C0
-        val disc = bp * bp - 4f * ap * (cp - ratio)
-        if (disc < 0f) return null
-        val sq   = sqrt(disc)
-        return (-bp - sq) / (2f * ap)   // D2: myopic side
     }
 }

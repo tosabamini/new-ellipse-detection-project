@@ -11,6 +11,7 @@ import androidx.lifecycle.viewModelScope
 import android.net.Uri
 import com.example.smakiartclinical.analysis.EllipseAnalyzer
 import com.example.smakiartclinical.analysis.EllipseResult
+import com.example.smakiartclinical.analysis.RefractionFilters
 import com.example.smakiartclinical.analysis.SCAEstimator
 import com.example.smakiartclinical.analysis.SCAResult
 import com.example.smakiartclinical.bluetooth.BluetoothClient
@@ -365,19 +366,28 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 val photos = photoFileManager.listPhotosFor(patientId, eye)
                 _allAnalyzeProgress.value = 0 to photos.size
                 if (photos.isEmpty()) { postMessage("No images for $patientId / $eye"); return@launch }
-                val samples = mutableListOf<SCAResult.Sample>()
+                // 1. Per-image ellipse fit (collect angle + major for IQR filtering)
+                val items = mutableListOf<RefractionFilters.Item>()
                 photos.forEachIndexed { i, photo ->
                     val bmp = photoFileManager.loadBitmap(photo.uri, inSampleSize = 2)
                     if (bmp != null) {
                         val res = ellipseAnalyzer.analyze(bmp)
                         bmp.recycle()
-                        val d = res?.dEst
-                        if (res != null && d != null) {
-                            samples += SCAResult.Sample(res.angleDeg, d)
+                        if (res != null) {
+                            items += RefractionFilters.Item(res.angleDeg, res.majorPx)
+                                .apply { dEst = res.dEst ?: Float.NaN }
                         }
                     }
                     _allAnalyzeProgress.value = (i + 1) to photos.size
                 }
+
+                // 2. major-axis IQR filter (drop very small/thin reflexes)
+                var kept = RefractionFilters.iqrFilterMajor(items)
+                    .filter { !it.dEst.isNaN() }   // solver failures dropped; D=0 (unmeasurable) kept
+
+                // 3. per-angle-bin D-IQR filter, then cos fit
+                kept = RefractionFilters.dIqrFilter(kept)
+                val samples = kept.map { SCAResult.Sample(it.angleDeg, it.dEst) }
                 val sca = SCAEstimator.fit(samples)
                 if (sca == null) {
                     postMessage("Need ≥${SCAEstimator.MIN_VALID} valid D samples (got ${samples.size}/${photos.size})")
@@ -642,6 +652,13 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     fun sendPreset(n: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             bluetoothClient.sendCommand("PRESET:$n")
+        }
+    }
+
+    /** 雲霧（フォグ）演出を Screen_FrontCamera 側でトリガーする */
+    fun sendFog() {
+        viewModelScope.launch(Dispatchers.IO) {
+            bluetoothClient.sendCommand("FOG")
         }
     }
 

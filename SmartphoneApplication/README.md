@@ -16,7 +16,8 @@ One device controls the examination and captures fundus images; the other displa
 │  • Manual ISO / Exp / Focus │                             │  • Landscape background      │
 │  • R/L eye selection        │                             │  • Front camera video rec.   │
 │  • D-pad balloon control    │                             │  • Preset position recall    │
-│  • Preset ①②③④ buttons    │                             │  • BLE GATT server           │
+│  • Preset ①②③④ buttons    │                             │  • Fog (雲霧) blur stimulus  │
+│  • Fog (雲霧) button        │                             │  • BLE GATT server           │
 │  • Start/Stop REC button    │                             │                              │
 │  • BLE GATT client          │                             │                              │
 └─────────────────────────────┘                             └──────────────────────────────┘
@@ -54,6 +55,7 @@ One device controls the examination and captures fundus images; the other displa
 | `PRESET:N` | Camera_RemoCon | Apply stored preset N (1–4) on Screen_FrontCamera |
 | `VIDEO_START:patientId:eye` | Camera_RemoCon | Begin front-camera recording (`eye` = `RIGHT`/`LEFT`) |
 | `VIDEO_STOP` | Camera_RemoCon | Stop front-camera recording |
+| `FOG` | Camera_RemoCon | Trigger the fog (雲霧) blur animation on the stimulus panel (simulates autorefractor fogging) |
 
 ### Connection Flow
 1. `Screen_FrontCamera` starts GATT server → registers service → **then** starts BLE advertising  
@@ -71,6 +73,22 @@ They are persisted on `Screen_FrontCamera` via `SharedPreferences`.
 - **Save**: tap a preset's **Save** button in the `Screen_FrontCamera` ControlPanel
 - **Apply remotely**: tap **①②③④** in `Camera_RemoCon`'s RemotePanel → sends `PRESET:N`
 - **Auto-load**: Preset 1 is applied automatically when `Screen_FrontCamera` starts
+
+---
+
+## Fog (雲霧) Stimulus
+
+Simulates the **fogging step of an autorefractor** by applying a staged blur to the
+entire stimulus panel (landscape + balloon) on `Screen_FrontCamera`.
+
+- **Trigger locally**: tap **☁ 雲霧 (Fog)** in the `Screen_FrontCamera` ControlPanel
+- **Trigger remotely**: tap the **☁** button (left of the **3D** shutter) in `Camera_RemoCon`'s
+  BottomShutterBar → sends `FOG`
+- **Animation** (≈3.3 s, one play per trigger):
+  `0 →(0.8 s)→ mid blur (9 dp) →(0.5 s hold)→(0.5 s)→ max blur (15 dp) →(1.0 s hold)→(0.5 s)→ 0`
+- State is owned by `MainViewModel.fogTrigger` (an incrementing `Int`); both the local button
+  and the BLE `FOG` command call `triggerFog()`, so they share one animation path.
+- The blur is display-only — it does **not** affect the recorded front-camera video.
 
 ---
 

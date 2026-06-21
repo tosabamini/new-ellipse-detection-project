@@ -212,6 +212,8 @@ Do not move this logic out of `init` — it must run before `openCamera()` is ca
 - The shutter buttons are custom circular `Box` composables, not Material `Button`s
   - Normal shutter: 64 dp, 3 dp border, no label
   - Focus shutter (3D / 10D): 56 dp, 2 dp border, text label inside
+  - Fog button (☁): 56 dp, indigo `0xFF5C6BC0` fill, left of the 3D shutter — sends the BLE `FOG`
+    command via `viewModel.sendFog()`. It is NOT a capture button, so it is **not** gated by `isCapturing`.
 - Do NOT add a loading spinner, progress bar, or modal during capture — all shutter buttons dim to grey via `isCapturing`
 
 ---
