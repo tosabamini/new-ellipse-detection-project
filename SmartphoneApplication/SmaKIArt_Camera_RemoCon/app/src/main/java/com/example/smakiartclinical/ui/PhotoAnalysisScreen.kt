@@ -1,5 +1,6 @@
 package com.example.smakiartclinical.ui
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +22,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -34,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.Canvas
+import com.example.smakiartclinical.analysis.EllipseConstants
 
 @Composable
 fun PhotoAnalysisScreen(
@@ -45,6 +50,12 @@ fun PhotoAnalysisScreen(
     val isAnalyzing          by viewModel.isAnalyzingCapture.collectAsState()
     val analysisAttempted    by viewModel.captureAnalysisAttempted.collectAsState()
 
+    // View-only 20% center crop toggle. The saved image is never modified; this
+    // only changes what is displayed, mirroring EllipseAnalyzer's analysis ROI
+    // (central CROP_RATIO × CROP_RATIO of the frame).
+    var cropped by remember(capturedBitmap) { mutableStateOf(false) }
+    val cropInfo = remember(capturedBitmap) { capturedBitmap?.let { makeCenterCrop(it) } }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -53,8 +64,13 @@ fun PhotoAnalysisScreen(
         // ── Captured image ────────────────────────────────────────────────────
         val bmp = capturedBitmap
         if (bmp != null) {
+            // What we actually show: full frame, or the 20% center crop.
+            val shown    = if (cropped && cropInfo != null) cropInfo.bitmap else bmp
+            val originX  = if (cropped && cropInfo != null) cropInfo.originX else 0
+            val originY  = if (cropped && cropInfo != null) cropInfo.originY else 0
+
             Image(
-                bitmap           = bmp.asImageBitmap(),
+                bitmap           = shown.asImageBitmap(),
                 contentDescription = null,
                 modifier         = Modifier.fillMaxSize(),
                 contentScale     = ContentScale.Fit
@@ -65,20 +81,21 @@ fun PhotoAnalysisScreen(
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val result = analysisResult ?: return@Canvas
 
-                    // Compute letterbox rect (ContentScale.Fit)
-                    val imgW  = bmp.width.toFloat()
-                    val imgH  = bmp.height.toFloat()
+                    // Compute letterbox rect (ContentScale.Fit) for the shown bitmap
+                    val imgW  = shown.width.toFloat()
+                    val imgH  = shown.height.toFloat()
                     val scale = minOf(size.width / imgW, size.height / imgH)
                     val dispW = imgW * scale
                     val dispH = imgH * scale
                     val offX  = (size.width  - dispW) / 2f
                     val offY  = (size.height - dispH) / 2f
 
-                    // Map ellipse coords from bitmap space → screen space
-                    val sx = dispW / result.bitmapW
-                    val sy = dispH / result.bitmapH
-                    val cx = offX + result.cxPx * sx
-                    val cy = offY + result.cyPx * sy
+                    // Ellipse coords are in FULL-bitmap space; subtract the crop
+                    // origin so they align with the (possibly cropped) shown image.
+                    val sx = dispW / imgW
+                    val sy = dispH / imgH
+                    val cx = offX + (result.cxPx - originX) * sx
+                    val cy = offY + (result.cyPx - originY) * sy
                     val halfMajor = result.majorPx * sx / 2f
                     val halfMinor = result.minorPx * sy / 2f
 
@@ -168,6 +185,26 @@ fun PhotoAnalysisScreen(
             }
         }
 
+        // ── Bottom-left: 20% crop toggle (view only) ──────────────────────────
+        if (capturedBitmap != null) {
+            Button(
+                onClick = { cropped = !cropped },
+                colors  = ButtonDefaults.buttonColors(
+                    containerColor = if (cropped) Color(0xFF1565C0) else Color.Black.copy(alpha = 0.65f)
+                ),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .safeDrawingPadding()
+                    .padding(start = 12.dp, bottom = 20.dp)
+            ) {
+                Text(
+                    text     = if (cropped) "Full Image" else "20% Crop",
+                    color    = Color.White,
+                    fontSize = 13.sp
+                )
+            }
+        }
+
         // ── Bottom: Analyze button ────────────────────────────────────────────
         Box(
             modifier = Modifier
@@ -195,4 +232,23 @@ fun PhotoAnalysisScreen(
             }
         }
     }
+}
+
+/** A center-cropped bitmap plus its origin (top-left) in full-bitmap pixel space. */
+private class CropInfo(val bitmap: Bitmap, val originX: Int, val originY: Int)
+
+/**
+ * Central CROP_RATIO × CROP_RATIO crop, mirroring `EllipseAnalyzer`'s analysis ROI
+ * (same integer math) so the displayed crop matches what the pipeline actually sees.
+ * Returns null if the source is too small.
+ */
+private fun makeCenterCrop(src: Bitmap): CropInfo? {
+    val w = src.width
+    val h = src.height
+    val cropW = (w * EllipseConstants.CROP_RATIO).toInt().coerceAtLeast(1)
+    val cropH = (h * EllipseConstants.CROP_RATIO).toInt().coerceAtLeast(1)
+    val roiX  = (w - cropW) / 2
+    val roiY  = (h - cropH) / 2
+    if (cropW <= 0 || cropH <= 0 || roiX < 0 || roiY < 0) return null
+    return CropInfo(Bitmap.createBitmap(src, roiX, roiY, cropW, cropH), roiX, roiY)
 }

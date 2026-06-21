@@ -49,6 +49,21 @@ class CameraController(private val context: Context) {
         private const val MAX_PREVIEW_EXPOSURE_NS = 200_000_000L  // 200 ms
         private const val MAX_CAMERA_RETRIES = 2
         private const val RETRY_DELAY_MS = 800L
+
+        /**
+         * Display-only digital zoom for the live preview (and its ellipse overlay).
+         * 2.5× shows the central 40% of the frame (100% / 40% = 2.5), giving the
+         * operator a larger, easier-to-aim view of the red reflex while leaving the
+         * central-20% analysis region with comfortable margin.
+         *
+         * This zooms ONLY the TextureView display matrix — it does NOT change the
+         * saved JPEG (separate still-capture path) nor the live analysis, because
+         * `TextureView.getBitmap()` returns the raw buffer and ignores setTransform.
+         *
+         * MUST be kept in sync with `EllipseCanvas` in CameraScreen.kt, which applies
+         * the same factor so the green overlay stays aligned with the zoomed preview.
+         */
+        const val PREVIEW_ZOOM = 2.5f
     }
 
     private var listener: Listener? = null
@@ -222,6 +237,10 @@ class CameraController(private val context: Context) {
         // Scale to fill the view (centre-crop): no black bars on either axis.
         val scale = maxOf(viewH / previewSize.height, viewW / previewSize.width)
         matrix.postScale(scale, scale, centerX, centerY)
+
+        // Display-only digital zoom about the view centre (shows central 40%).
+        // Uniform scale about the same centre commutes with the rotation below.
+        matrix.postScale(PREVIEW_ZOOM, PREVIEW_ZOOM, centerX, centerY)
 
         val rotateDeg = if (displayRotationDegrees == 270) 90f else -90f
         matrix.postRotate(rotateDeg, centerX, centerY)

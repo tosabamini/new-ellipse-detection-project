@@ -131,7 +131,18 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
     private val _settings = MutableStateFlow(CameraSettings())
     val settings: StateFlow<CameraSettings> = _settings.asStateFlow()
 
-    private val _session = MutableStateFlow(SessionState())
+    // Patient ID is composed as: <DDMM date> + <manual> + <suffix N|D>, no separators.
+    // e.g. 21 June, manual "04", Dilated → "210604D".
+    private val _patientDatePrefix = MutableStateFlow(todayDdmm())
+    val patientDatePrefix: StateFlow<String> = _patientDatePrefix.asStateFlow()
+
+    private val _patientManual = MutableStateFlow("")
+    val patientManual: StateFlow<String> = _patientManual.asStateFlow()
+
+    private val _patientSuffix = MutableStateFlow("")   // "", "N" (Not dilated), or "D" (Dilated)
+    val patientSuffix: StateFlow<String> = _patientSuffix.asStateFlow()
+
+    private val _session = MutableStateFlow(SessionState(patientId = _patientDatePrefix.value))
     val session: StateFlow<SessionState> = _session.asStateFlow()
 
     private val _message = MutableStateFlow<UiMessage?>(null)
@@ -451,8 +462,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun captureImage() {
         val s = _session.value
-        if (s.patientId.isBlank()) {
-            postMessage("Enter a patient ID before capturing")
+        if (_patientManual.value.isBlank()) {
+            postMessage("Enter the ID (after the date) before capturing")
             return
         }
         _isCapturing.value = true
@@ -462,8 +473,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun captureFocusPair(focusDistance: Float, tag: String) {
         val s = _session.value
-        if (s.patientId.isBlank()) {
-            postMessage("Enter a patient ID before capturing")
+        if (_patientManual.value.isBlank()) {
+            postMessage("Enter the ID (after the date) before capturing")
             return
         }
         _isCapturing.value = true
@@ -532,12 +543,36 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     // --- Session ---
 
-    fun setPatientId(id: String) = _session.update { it.copy(patientId = id) }
+    /** Set the manual middle part of the patient ID (free text/number, any length). */
+    fun setPatientManual(s: String) {
+        _patientManual.value = s
+        recomposePatientId()
+    }
+
+    /** Toggle the N/D suffix. Pressing the active one clears it. */
+    fun setPatientSuffix(s: String) {
+        _patientSuffix.value = if (_patientSuffix.value == s) "" else s
+        recomposePatientId()
+    }
+
+    private fun recomposePatientId() {
+        val composed = _patientDatePrefix.value + _patientManual.value + _patientSuffix.value
+        _session.update { it.copy(patientId = composed) }
+    }
+
+    /** Today's date as DDMM (day then month, zero-padded). e.g. 21 June → "2106". */
+    private fun todayDdmm(): String {
+        val d = java.time.LocalDate.now()
+        return "%02d%02d".format(d.dayOfMonth, d.monthValue)
+    }
 
     fun setSelectedEye(eye: String) = _session.update { it.copy(selectedEye = eye) }
 
     fun finishSession() {
-        _session.value = SessionState()
+        _patientManual.value = ""
+        _patientSuffix.value = ""
+        _patientDatePrefix.value = todayDdmm()   // refresh in case the day rolled over
+        _session.value = SessionState(patientId = _patientDatePrefix.value)
         postMessage("Session finished")
     }
 
@@ -618,8 +653,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
 
     fun sendVideoStart() {
         val patientId = _session.value.patientId
-        if (patientId.isBlank()) {
-            postMessage("Enter a Patient ID before starting remote recording.")
+        if (_patientManual.value.isBlank()) {
+            postMessage("Enter the ID (after the date) before starting remote recording.")
             return
         }
         val eye = _session.value.selectedEye   // "RIGHT" or "LEFT"

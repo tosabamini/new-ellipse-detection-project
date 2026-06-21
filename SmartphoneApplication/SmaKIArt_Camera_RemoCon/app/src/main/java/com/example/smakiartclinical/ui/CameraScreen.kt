@@ -111,6 +111,8 @@ fun CameraScreen(viewModel: CameraViewModel) {
     val showAnalysisScreen   by viewModel.showAnalysisScreen.collectAsState()
     val currentOrientation   by viewModel.currentOrientation.collectAsState()
     val tiltDeg              by viewModel.tiltDeg.collectAsState()
+    val patientManual        by viewModel.patientManual.collectAsState()
+    val patientSuffix        by viewModel.patientSuffix.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
     var dpadStep     by remember { mutableIntStateOf(10) }
@@ -188,11 +190,19 @@ fun CameraScreen(viewModel: CameraViewModel) {
                         .width(176.dp),
                     bgColor           = panelBg,
                     patientId         = session.patientId,
-                    onPatientIdChange = { viewModel.setPatientId(it) },
+                    manual            = patientManual,
+                    onManualChange    = { viewModel.setPatientManual(it) },
+                    suffix            = patientSuffix,
+                    onSuffixSelect    = { viewModel.setPatientSuffix(it) },
                     selectedEye       = session.selectedEye,
                     onEyeSelect       = { viewModel.setSelectedEye(it) },
                     isAnalysisRunning = isAnalysisRunning,
                     onToggleAnalysis  = { viewModel.toggleAnalysis() },
+                    isCapturing       = isCapturing,
+                    onCapture10D      = { viewModel.captureFocusPair10D() },
+                    isRemoteRecording = isRemoteRecording,
+                    onVideoStart      = { viewModel.sendVideoStart() },
+                    onVideoStop       = { viewModel.sendVideoStop() },
                     onFinishSession   = { viewModel.finishSession() },
                     onOpenGallery     = { viewModel.openGallery() },
                     onOpenSettings    = { showSettings = true }
@@ -202,7 +212,7 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 IsoQuickPanel(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(end = 180.dp, top = 4.dp)
+                        .padding(end = 180.dp, top = 110.dp)
                         .width(60.dp),
                     bgColor    = panelBg,
                     isoValue   = settings.iso,
@@ -295,19 +305,15 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 }
             }
 
-            // Bottom: Shutter controls + Start REC — no background, lifted 8dp, shifted 10dp right
+            // Bottom: Fog / 3D / main shutter — centered, lifted ~18dp
             BottomShutterBar(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .offset(x = 10.dp, y = (-8).dp),
-                isCapturing       = isCapturing,
-                isRemoteRecording = isRemoteRecording,
-                onCapture         = { viewModel.captureImage() },
-                onCapture3D       = { viewModel.captureFocusPair3D() },
-                onCapture10D      = { viewModel.captureFocusPair10D() },
-                onVideoStart      = { viewModel.sendVideoStart() },
-                onVideoStop       = { viewModel.sendVideoStop() },
-                onFog             = { viewModel.sendFog() }
+                    .offset(y = (-18).dp),
+                isCapturing = isCapturing,
+                onCapture   = { viewModel.captureImage() },
+                onCapture3D = { viewModel.captureFocusPair3D() },
+                onFog       = { viewModel.sendFog() }
             )
         }
 
@@ -415,8 +421,9 @@ private fun EllipseCanvas(
 
         // After -90° rotation the portrait's height (bmpH) maps to display width,
         // its width (bmpW) maps to display height.  Match applyPreviewTransform's
-        // centre-crop scale formula.
-        val scale = maxOf(size.width / bmpH, size.height / bmpW)
+        // centre-crop scale formula, including the same display-only zoom (central 40%).
+        val scale = maxOf(size.width / bmpH, size.height / bmpW) *
+            com.example.smakiartclinical.camera.CameraController.PREVIEW_ZOOM
         val centerX = size.width / 2f
         val centerY = size.height / 2f
 
@@ -475,19 +482,19 @@ private fun RemotePanel(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text("Remote", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-
-        // BT status row
+        // Title + connection lamp (green when connected) + Disconnect.
+        // No "Connected" text — the lamp alone signals the connected state.
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-            val (dot, label) = when (btState) {
-                BtConnectionState.DISCONNECTED -> Color(0xFF757575) to "Disconnected"
-                BtConnectionState.SCANNING     -> Color(0xFFFFC107) to "Scanning…"
-                BtConnectionState.CONNECTING   -> Color(0xFFFFC107) to "Connecting…"
-                BtConnectionState.CONNECTED    -> Color(0xFF00E676) to "Connected"
+            Text("Remote", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.width(6.dp))
+            val lamp = when (btState) {
+                BtConnectionState.CONNECTED    -> Color(0xFF00E676)
+                BtConnectionState.SCANNING,
+                BtConnectionState.CONNECTING   -> Color(0xFFFFC107)
+                BtConnectionState.DISCONNECTED -> Color(0xFF757575)
             }
-            Box(Modifier.size(8.dp).clip(CircleShape).background(dot))
-            Spacer(Modifier.width(5.dp))
-            Text(label, color = Color.White, fontSize = 11.sp, modifier = Modifier.weight(1f))
+            Box(Modifier.size(10.dp).clip(CircleShape).background(lamp))
+            Spacer(Modifier.weight(1f))
             if (connected) {
                 TextButton(
                     onClick = onDisconnect,
@@ -526,8 +533,28 @@ private fun RemotePanel(
         if (connected) {
             Divider(color = Color.White.copy(alpha = 0.18f))
 
-            Text("Balloon", color = Color.White.copy(alpha = 0.65f), fontSize = 10.sp)
+            // プリセットボタン ①②③④（上）— ①②③④ で自明なのでタイトルなし
+            Row(
+                modifier              = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                listOf("①", "②", "③", "④").forEachIndexed { i, label ->
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF37474F))
+                            .clickable { onPreset(i + 1) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(label, color = Color.White, fontSize = 18.sp)
+                    }
+                }
+            }
 
+            Divider(color = Color.White.copy(alpha = 0.18f))
+
+            // バルーン操作（下）— タイトルなし
             // D-pad
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -576,28 +603,6 @@ private fun RemotePanel(
                 Text("Size:", color = Color.White.copy(alpha = 0.65f), fontSize = 11.sp)
                 SizeButton("−") { onBalloonSizeChange(-15) }
                 SizeButton("+") { onBalloonSizeChange(+15) }
-            }
-
-            Divider(color = Color.White.copy(alpha = 0.18f))
-
-            // プリセットボタン ①②③④
-            Text("Preset", color = Color.White.copy(alpha = 0.65f), fontSize = 10.sp)
-            Row(
-                modifier              = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                listOf("①", "②", "③", "④").forEachIndexed { i, label ->
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFF37474F))
-                            .clickable { onPreset(i + 1) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(label, color = Color.White, fontSize = 18.sp)
-                    }
-                }
             }
         }
     }
@@ -655,11 +660,19 @@ private fun SessionPanel(
     modifier: Modifier = Modifier,
     bgColor: Color,
     patientId: String,
-    onPatientIdChange: (String) -> Unit,
+    manual: String,
+    onManualChange: (String) -> Unit,
+    suffix: String,
+    onSuffixSelect: (String) -> Unit,
     selectedEye: String,
     onEyeSelect: (String) -> Unit,
     isAnalysisRunning: Boolean,
     onToggleAnalysis: () -> Unit,
+    isCapturing: Boolean,
+    onCapture10D: () -> Unit,
+    isRemoteRecording: Boolean,
+    onVideoStart: () -> Unit,
+    onVideoStop: () -> Unit,
     onFinishSession: () -> Unit,
     onOpenGallery: () -> Unit,
     onOpenSettings: () -> Unit
@@ -689,35 +702,94 @@ private fun SessionPanel(
             }
         }
 
-        OutlinedTextField(
-            value         = patientId,
-            onValueChange = onPatientIdChange,
-            label         = { Text("Patient ID") },
-            singleLine    = true,
-            modifier      = Modifier.fillMaxWidth(),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedTextColor     = Color.White,
-                unfocusedTextColor   = Color.White,
-                focusedBorderColor   = Color.White,
-                unfocusedBorderColor = Color.White.copy(alpha = 0.5f),
-                focusedLabelColor    = Color.White,
-                unfocusedLabelColor  = Color.White.copy(alpha = 0.7f),
-                cursorColor          = Color.White
-            )
+        // Composed Patient ID preview = date(DDMM) + manual + N/D
+        Text(
+            text       = "Patient ID: $patientId",
+            color      = Color.White,
+            fontSize   = 11.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines   = 1
         )
 
-        EyeToggleButtons(selected = selectedEye, onSelect = onEyeSelect)
-
-        Button(
-            onClick  = onToggleAnalysis,
-            modifier = Modifier.fillMaxWidth(),
-            colors   = ButtonDefaults.buttonColors(containerColor = PrimaryPurple)
+        // Manual middle part + N / D suffix toggle (one row).
+        // The DDMM date prefix is shown in the preview above and is fixed, so it
+        // is not repeated as an editable field here.
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            Text(
-                text     = if (isAnalysisRunning) "■ Stop Analysis" else "▶ Start Analysis",
-                fontSize = 12.sp,
-                color    = Color.White
+            OutlinedTextField(
+                value         = manual,
+                onValueChange = onManualChange,
+                label         = { Text("ID") },
+                singleLine    = true,
+                modifier      = Modifier.weight(1f),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor     = Color.White,
+                    unfocusedTextColor   = Color.White,
+                    focusedBorderColor   = Color.White,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.5f),
+                    focusedLabelColor    = Color.White,
+                    unfocusedLabelColor  = Color.White.copy(alpha = 0.7f),
+                    cursorColor          = Color.White
+                )
             )
+            listOf("N", "D").forEach { code ->
+                val sel = suffix == code
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (sel) Color.White else Color.Black.copy(alpha = 0.45f))
+                        .clickable { onSuffixSelect(code) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text       = code,
+                        color      = if (sel) Color.Black else Color.White,
+                        fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                        fontSize   = 13.sp
+                    )
+                }
+            }
+        }
+
+        // Eye selector (R/L) + analysis play/stop icon
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            EyeToggleButtons(selected = selectedEye, onSelect = onEyeSelect)
+            Spacer(Modifier.weight(1f))
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(PrimaryPurple)
+                    .clickable { onToggleAnalysis() },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text     = if (isAnalysisRunning) "■" else "▶",
+                    color    = Color.White,
+                    fontSize = 18.sp
+                )
+            }
+        }
+
+        // 10D focus shutter + front-camera REC (moved here from the bottom bar)
+        Row(
+            modifier              = Modifier.fillMaxWidth(),
+            verticalAlignment     = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            FocusShutterButton(label = "10D", isCapturing = isCapturing, onClick = onCapture10D)
+            Spacer(Modifier.width(20.dp))
+            RecButton(isRecording = isRemoteRecording) {
+                if (isRemoteRecording) onVideoStop() else onVideoStart()
+            }
         }
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -815,18 +887,14 @@ private fun EyeToggleButtons(selected: String, onSelect: (String) -> Unit) {
     }
 }
 
-// ── Bottom shutter bar — Start REC (left) + 3D / Shutter / 10D (center-right) ─
+// ── Bottom shutter bar — Fog / 3D / main shutter (centered) ──────────────────
 
 @Composable
 private fun BottomShutterBar(
     modifier: Modifier = Modifier,
     isCapturing: Boolean,
-    isRemoteRecording: Boolean,
     onCapture: () -> Unit,
     onCapture3D: () -> Unit,
-    onCapture10D: () -> Unit,
-    onVideoStart: () -> Unit,
-    onVideoStop: () -> Unit,
     onFog: () -> Unit
 ) {
     Row(
@@ -836,25 +904,14 @@ private fun BottomShutterBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center
     ) {
-        // Start / Stop REC — シャッターの左、緑 or 赤の円形ボタン
-        RecButton(
-            isRecording = isRemoteRecording,
-            onClick     = { if (isRemoteRecording) onVideoStop() else onVideoStart() }
-        )
-
-        Spacer(Modifier.width(28.dp))
-
         // 雲霧（フォグ）— Screen_FrontCamera 側の刺激パネルをぼかす BLE コマンド。
         // 撮影系ボタンではないので isCapturing でも無効化しない。
         FogButton(onClick = onFog)
-        Spacer(Modifier.width(16.dp))
+        Spacer(Modifier.width(20.dp))
 
-        // 3D / メインシャッター / 10D
-        FocusShutterButton(label = "3D",  isCapturing = isCapturing, onClick = onCapture3D)
-        Spacer(Modifier.width(16.dp))
+        FocusShutterButton(label = "3D", isCapturing = isCapturing, onClick = onCapture3D)
+        Spacer(Modifier.width(20.dp))
         ShutterButton(isCapturing = isCapturing, onClick = onCapture)
-        Spacer(Modifier.width(16.dp))
-        FocusShutterButton(label = "10D", isCapturing = isCapturing, onClick = onCapture10D)
     }
 }
 
@@ -887,14 +944,14 @@ private fun RecButton(isRecording: Boolean, onClick: () -> Unit) {
 private fun FogButton(onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(56.dp)
+            .size(64.dp)
             .clip(CircleShape)
             .background(Color(0xFF5C6BC0))
             .border(2.dp, Color.White.copy(alpha = 0.55f), CircleShape)
             .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Text("☁", color = Color.White, fontSize = 22.sp)
+        Text("☁", color = Color.White, fontSize = 26.sp)
     }
 }
 
@@ -902,13 +959,13 @@ private fun FogButton(onClick: () -> Unit) {
 private fun ShutterButton(isCapturing: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(64.dp)
+            .size(76.dp)
             .clip(CircleShape)
             .border(3.dp, Color.White.copy(alpha = 0.75f), CircleShape)
             .clickable(enabled = !isCapturing) { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Box(modifier = Modifier.size(50.dp).clip(CircleShape)
+        Box(modifier = Modifier.size(60.dp).clip(CircleShape)
             .background(if (isCapturing) Color(0xFFAAAAAA) else Color.White))
     }
 }
@@ -917,14 +974,14 @@ private fun ShutterButton(isCapturing: Boolean, onClick: () -> Unit) {
 private fun FocusShutterButton(label: String, isCapturing: Boolean, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(56.dp)
+            .size(64.dp)
             .clip(CircleShape)
             .border(2.dp, Color.White.copy(alpha = 0.75f), CircleShape)
             .clickable(enabled = !isCapturing) { onClick() },
         contentAlignment = Alignment.Center
     ) {
         Box(
-            modifier = Modifier.size(44.dp).clip(CircleShape)
+            modifier = Modifier.size(50.dp).clip(CircleShape)
                 .background(if (isCapturing) Color(0xFFAAAAAA) else Color.White),
             contentAlignment = Alignment.Center
         ) {
